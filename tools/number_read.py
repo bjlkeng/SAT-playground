@@ -606,11 +606,13 @@ class Reading:
             for k in range(len(lits)):
                 got = p.implied(lits[:k] + [-l for l in lits[k + 1:]])
                 self._spend()
+                # set by this propagation, or set from the start (a member
+                # that an earlier clause of this reading fixed for good)
                 if got is None:
                     fail.append((k, 0))
-                elif lits[k] in got:
+                elif lits[k] in got or p.value(lits[k]) == 1:
                     fail.append((k, 1))
-                elif -lits[k] in got:
+                elif -lits[k] in got or p.value(lits[k]) == -1:
                     fail.append((k, -1))
             if not fail:
                 break
@@ -1435,7 +1437,11 @@ def check_record(rec, shape_fn, seed=None, kinds=None):
     for inp in rec["inputs"]:
         if inp["kind"] != "order" or len(inp["vars"]) < 2:
             continue
-        want = [m(v) for v in inp["vars"]]
+        # a bit that the formula with the links fixes for good is no part of
+        # the number any more (a toy's own constraint can rule values out)
+        want = [m(v) for v in inp["vars"] if pc.value(m(v)) == 0]
+        if len(want) < 2:
+            continue
         found = False
         for ch in chains:
             pos = 0
@@ -1571,6 +1577,14 @@ def selftest(a):
     guard = [[1, -2], [2, -3], [-4, 1], [-4, -2]]
     r = Reading(4, guard, partial=True)
     assert [n.lits for n in r.numbers] == [[1, 2]] and r.links == [], (r.numbers, r.links, r.notes)
+    # a member that is fixed from the start is no bit: here g3 is off by a unit
+    # that propagation does not see at once (two clauses on a helper), the bit
+    # test learns it and the chain is g1, g2
+    fixed = [[1, -2], [2, -3], [-3, 8], [-3, -8],
+             [-7, 1, 2, 3], [7, -1], [7, -2], [7, -3], [-5, 1, 2], [5, -1, -2], [-5, 2], [-5, 1]]
+    rf = Reading(8, fixed, partial=True)
+    assert all(3 not in n.lits and -3 not in n.lits for n in rf.numbers), [n.lits for n in rf.numbers]
+    assert sequence_problems(Prop(8, fixed), 8, fixed, rf) == []
     # a value no model takes (x = 2 is ruled out by "not g2 or g3"): the chain
     # loses the bit that the other bits now set, and nothing false is listed
     dead = [[1, -2], [2, -3], [-2, 3], [4, 1], [-4, -1]]

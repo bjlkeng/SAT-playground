@@ -8958,20 +8958,19 @@ twice with signs flipped, 693 readings.
 
 | option set | read in full, of readings |
 |---|---|
-| the base setting (with every setting that gives the same clauses) | 139 of 153 |
-| `cnf.no_distributivity` | 129 of 132 |
-| `card.ordered` | 104 of 108 |
-| `card.unate` | 88 of 108 |
-| `card.circuit` (counts by adders) | 37 of 108 |
-| `pb.binary_merge`, `cnf.no_common_patterns`, `pb.sorting`, `pb.bv` (the records they change) | 36 of 39, 26 of 30, 9 of 12, 0 of 3 |
-| all | 568 of 693 |
+| the base setting (with every setting that gives the same clauses) | 144 of 153 |
+| `cnf.no_distributivity` | 130 of 132 |
+| `card.ordered` | 106 of 108 |
+| `card.unate` | 93 of 108 |
+| `card.circuit` (counts by adders) | 39 of 108 |
+| `pb.binary_merge`, `cnf.no_common_patterns`, `pb.sorting`, `pb.bv` (the records they change) | 36 of 39, 27 of 30, 9 of 12, 0 of 3 |
+| all | 584 of 693 |
 
 What is not read in full, and why:
-- *The base setting's 14* are the six toys with a constraint of their own
-  (x <= y, x <= y <= z, x + y = 4, x != y, three numbers all different, x =
-  an if-then-else). There one number is a function of another, a value is
-  dead, or nothing reads an end bit, and the reading takes a shorter or a
-  different but equal chain. Nothing false is listed.
+- *The base setting's 9* are four toys with a constraint of their own and
+  no test (x <= y, x <= y <= z, x != y, three numbers all different). There
+  nothing reads an end bit, or one number leans on another, and the reading
+  takes a shorter or a different but equal chain. Nothing false is listed.
 - *Counts by adders* (`card.circuit`): an adder's sum is an XOR, which pins
   down its inputs as much as its output, and Z3 writes the chain link
   between two bits into the adder's own clauses. The reader finds the pieces
