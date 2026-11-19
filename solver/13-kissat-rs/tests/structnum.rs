@@ -293,12 +293,13 @@ fn a_very_long_chain_costs_its_length_and_no_more() {
     assert_ne!(r.get("long").map(String::as_str), Some("0"), "{:?}", r);
     let work: u64 = r["work"].parse().unwrap();
     assert!(work < 200 * n as u64, "{} units of work for a chain of {}", work, n);
-    // and it stops at a limit set in the middle of the walk
-    let cut = run(&cnf, &["--structnum=1", "--structnumticks=1500"], &[]);
+    // and it stops at a limit set in the middle of the walk (the pass starts
+    // only with room for its tables and two walks of the formula: 2.4M here)
+    let cut = run(&cnf, &["--structnum=1", "--structnumticks=5000"], &[]);
     let r = report(&cut.stdout);
     assert_eq!(r.get("status").map(String::as_str), Some("stopped"), "{:?}", r);
     let spent: u64 = r["work"].parse().unwrap();
-    assert!(spent <= 1_500_000 + 20_000, "the pass ran to {} with a limit of 1,500,000", spent);
+    assert!(spent <= 5_000_000 + 20_000, "the pass ran to {} with a limit of 5,000,000", spent);
 }
 
 #[test]
@@ -570,4 +571,93 @@ fn tests_that_find_no_number_under_a_count_end_early() {
     assert!(read > 50_000_000 && read < 52_000_000, "the tests spent {}", read);
     let off = run(&cnf, &[], &[]);
     assert_eq!(on.status, off.status);
+}
+
+#[test]
+fn no_table_is_built_without_work_for_it() {
+    // the toy with its variables numbered from 1,000,001: seven variables
+    // in use and tables of a million entries. With a limit that does not
+    // cover the tables the pass does not start (it used to build them
+    // first); with one that does, it reads the toy
+    let fx = Fixture::new("num-sparse");
+    let (cnf, proof) = (fx.path("sparse.cnf"), fx.path("sparse.proof"));
+    let shift = 1_000_000i64;
+    let cl: Vec<Vec<i64>> = toy().iter().map(|c| c.iter().map(|&l| if l > 0 { l + shift } else { l - shift }).collect()).collect();
+    write_cnf(&cnf, 7 + shift, &cl);
+    let (out, _err) = run_num(&cnf, &proof, &["--structnumticks=1"]);
+    assert_eq!(report(&out).get("status").map(String::as_str), Some("no-budget"), "{:?}", report(&out));
+    let (out, _err) = run_num(&cnf, &proof, &["--structnumticks=100"]);
+    assert_eq!(report(&out).get("status").map(String::as_str), Some("no-budget"), "{:?}", report(&out));
+    let (out, _err) = run_num(&cnf, &proof, &[]);
+    let r = report(&out);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(derived(&proof), vec![vec![-5 - shift, 2 + shift], vec![5 + shift, -2 - shift], vec![6 + shift, -3 - shift], vec![-7 - shift, 1 + shift]]);
+    assert!(r["work"].parse::<u64>().unwrap() > 6 * shift as u64, "the tables are paid: {:?}", r);
+}
+
+#[test]
+fn a_limit_never_gives_a_reading_that_looks_whole_and_is_not() {
+    // 50 copies of the toy on variables of their own: 50 numbers, 200
+    // clauses. Whatever the limit, a run that says "read" has read them
+    // all (a step skipped for lack of room used to leave an empty reading
+    // that was reported as whole)
+    let fx = Fixture::new("num-copies");
+    let cnf = fx.path("copies.cnf");
+    let copies = 50i64;
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for k in 0..copies {
+        cl.extend(toy().iter().map(|c| c.iter().map(|&l| if l > 0 { l + 7 * k } else { l - 7 * k }).collect::<Vec<i64>>()));
+    }
+    write_cnf(&cnf, 7 * copies, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let whole = report(&free.stdout);
+    assert_eq!(whole.get("status").map(String::as_str), Some("read"), "{:?}", whole);
+    assert_eq!(whole.get("counted").map(String::as_str), Some("50"), "{:?}", whole);
+    assert_eq!(whole.get("added").map(String::as_str), Some("200"), "{:?}", whole);
+    let full: u64 = whole["work"].parse().unwrap();
+    let mut cut = 0;
+    for limit_k in 1..=(full / 1000 + 2) {
+        let on = run(&cnf, &["--structnum=1", &format!("--structnumticks={}", limit_k)], &[]);
+        let r = report(&on.stdout);
+        let status = r.get("status").cloned().unwrap_or_default();
+        if status == "read" {
+            assert_eq!(r.get("counted").map(String::as_str), Some("50"), "limit {}K: {:?}", limit_k, r);
+            assert_eq!(r.get("added").map(String::as_str), Some("200"), "limit {}K: {:?}", limit_k, r);
+        } else {
+            cut += 1;
+            assert!(status == "stopped" || status == "no-budget", "limit {}K: {:?}", limit_k, r);
+            let spent: u64 = r.get("work").map(|w| w.parse().unwrap()).unwrap_or(0);
+            assert!(spent <= limit_k * 1000 + 5_000, "limit {}K: the pass ran to {}", limit_k, spent);
+        }
+        assert_eq!(on.status, free.status);
+    }
+    assert!(cut >= 5, "the limits of this test never cut the pass: {} of them did", cut);
+}
+
+#[test]
+fn a_long_list_of_two_literal_clauses_is_paid_as_it_is_walked() {
+    // the toy and 100,000 more clauses "h1 or not g1" (the same clause again
+    // and again): setting g1 walks a list of 100,000. A limit that ends
+    // inside the list holds there (the whole list used to be charged at
+    // once, before any of it was walked)
+    let fx = Fixture::new("num-star");
+    let cnf = fx.path("star.cnf");
+    let mut cl = toy();
+    for _ in 0..100_000 {
+        cl.push(vec![7, -1]);
+    }
+    write_cnf(&cnf, 7, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let full: u64 = report(&free.stdout)["work"].parse().unwrap();
+    for limit_k in [650u64, 800, 950, 1100, 1300] {
+        if limit_k * 1000 >= full {
+            continue;
+        }
+        let on = run(&cnf, &["--structnum=1", &format!("--structnumticks={}", limit_k)], &[]);
+        let r = report(&on.stdout);
+        let spent: u64 = r.get("work").map(|w| w.parse().unwrap()).unwrap_or(0);
+        assert_ne!(r.get("status").map(String::as_str), Some("read"), "limit {}K of {}: {:?}", limit_k, full, r);
+        assert!(spent <= limit_k * 1000 + 5_000, "limit {}K: the pass ran to {}", limit_k, spent);
+    }
+    assert!(full > 1_300_000, "the example no longer costs what this test is about: {}", full);
 }

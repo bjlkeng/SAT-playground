@@ -101,9 +101,11 @@ const END_FAN: usize = 4;
 const PATHS_PER_LINK: u64 = 3;
 const PATHS_FLOOR: u64 = 1_000_000;
 /// The tests of the candidates may cost this much before the first number
-/// under a count is found, and this much more for each one found. The
-/// pyramid cells need 0.4M to 4M of tests a number under a count; a
-/// timetable with 57,000 candidates and none under a count ran to the limit.
+/// under a count is found, and this much more for each one found on bits
+/// that no number before it holds. The pyramid cells need 0.4M to 4M of
+/// tests a number under a count; a timetable with 57,000 candidates and
+/// none under a count ran to the limit, and so did a cell with 15,000
+/// chains over the bits of one number.
 const READ_FIRST: u64 = 50_000_000;
 const READ_MORE: u64 = 20_000_000;
 
@@ -137,13 +139,26 @@ struct Clock<'a> {
     work: u64,
     /// `work` at the last look.
     looked: u64,
-    /// The limit or the stop flag ended the pass. It stays set.
+    /// The limit, the stop flag or the allowance ended the work. It stays
+    /// set (`lift` takes an allowance's verdict back).
     over: bool,
+    /// `over` came from the allowance, not from the limit or the stop flag.
+    soft: bool,
+    /// The work the pass may have done by the end of the part that runs
+    /// now: the tests of the candidates have an allowance of their own.
+    /// `u64::MAX` when there is none.
+    allow: u64,
 }
 
 impl<'a> Clock<'a> {
     /// Work between two looks at the limits.
     const STEP: u64 = 4096;
+
+    /// `budget` is the value the solver's clock may reach.
+    fn new(ticks: &'a mut u64, stop: &'a AtomicBool, budget: u64) -> Clock<'a> {
+        let base = *ticks;
+        Clock { ticks, stop, base, budget, work: 0, looked: 0, over: false, soft: false, allow: u64::MAX }
+    }
 
     /// Count `n` units. True when the pass must end.
     #[inline]
@@ -156,20 +171,54 @@ impl<'a> Clock<'a> {
         }
     }
 
-    /// Write the clock and look at the limit and the stop flag.
+    /// Write the clock and look at the limit, the stop flag and the
+    /// allowance.
     fn look(&mut self) -> bool {
         self.looked = self.work;
         *self.ticks = self.base.saturating_add(self.work);
-        if *self.ticks > self.budget || self.stop.load(Ordering::Relaxed) {
-            self.over = true;
+        if !self.over {
+            if *self.ticks > self.budget || self.stop.load(Ordering::Relaxed) {
+                self.over = true;
+                self.soft = false;
+            } else if self.work > self.allow {
+                self.over = true;
+                self.soft = true;
+            }
         }
         self.over
     }
 
     /// Is there room for a piece of work of size `n` that is done in one
-    /// go (a sort, a table)? Without room the piece is not started.
+    /// go (a sort, a table)? Without room the piece is not started, and
+    /// the work ends here: what comes after would lean on the piece.
     fn room(&mut self, n: u64) -> bool {
-        !self.look() && self.base.saturating_add(self.work).saturating_add(n) <= self.budget
+        if self.look() {
+            return false;
+        }
+        if self.base.saturating_add(self.work).saturating_add(n) > self.budget {
+            self.over = true;
+            self.soft = false;
+            return false;
+        }
+        if self.work.saturating_add(n) > self.allow {
+            self.over = true;
+            self.soft = true;
+            return false;
+        }
+        true
+    }
+
+    /// The allowance ended the part that ran, and the limit and the stop
+    /// flag did not: take the allowance away and go on. False when there
+    /// is nothing to take back.
+    fn lift(&mut self) -> bool {
+        let was = self.over && self.soft;
+        if was {
+            self.over = false;
+            self.soft = false;
+        }
+        self.allow = u64::MAX;
+        was
     }
 }
 
@@ -187,6 +236,10 @@ struct Prop<'a> {
     lits: Vec<i32>,
     start: Vec<u32>,
     root: usize,
+    /// The trail up to here is propagated. A cut propagation leaves it
+    /// short of the trail's end; the literal it was at is done again from
+    /// its start when the work goes on (`resume`).
+    head: usize,
     conflict: bool,
     /// The pass's work. Propagation pays one per literal taken off the
     /// trail, per two-literal clause of it, per longer clause looked at and
@@ -203,20 +256,28 @@ impl<'a> Prop<'a> {
     /// The clock bounds the work from the first step on: the formula is
     /// walked and its units are propagated here, and that alone can be
     /// long.
-    fn new(f: &Formula, clock: Clock<'a>) -> Prop<'a> {
-        let nl = 2 * (f.vars as usize + 1);
+    fn new(f: &Formula, mut clock: Clock<'a>) -> Prop<'a> {
+        // the tables a variable and a literal are paid before they are made
+        // (variable numbers can be sparse: few clauses and huge tables)
+        let tables = 2 * (f.vars as usize + 1);
+        let fits = clock.room(3 * tables as u64) && !clock.pay(3 * tables as u64);
+        let nl = if fits { tables } else { 0 };
         let mut p = Prop {
-            val: vec![0; f.vars as usize + 1],
+            val: vec![0; nl / 2],
             trail: Vec::new(),
             bins: vec![Vec::new(); nl],
             watch: vec![Vec::new(); nl],
             lits: Vec::new(),
             start: vec![0],
             root: 0,
+            head: 0,
             conflict: false,
             clock,
-            stopped: false,
+            stopped: !fits,
         };
+        if !fits {
+            return p;
+        }
         let mut units: Vec<i32> = Vec::new();
         for i in 0..f.len() {
             let c = f.clause(i);
@@ -275,7 +336,6 @@ impl<'a> Prop<'a> {
         if self.conflict {
             return false;
         }
-        let head = self.trail.len();
         for &l in lits {
             match self.value(l) {
                 0 => self.set(l),
@@ -283,24 +343,31 @@ impl<'a> Prop<'a> {
                 _ => return false,
             }
         }
-        self.propagate(head)
+        self.propagate()
     }
 
-    fn propagate(&mut self, mut head: usize) -> bool {
+    /// From `head` to the end of the trail. A literal counts as done only
+    /// when all its clauses were looked at: a cut leaves `head` on it.
+    fn propagate(&mut self) -> bool {
         if self.stopped {
             return true;
         }
-        while head < self.trail.len() {
-            let l = self.trail[head];
+        while self.head < self.trail.len() {
+            let l = self.trail[self.head];
             let idx = li(l);
-            if self.clock.pay(1 + self.bins[idx].len() as u64) {
+            if self.clock.pay(1) {
                 // out of work in the middle: not a conflict, and not the whole
                 // propagation either. The caller sees `stopped` and gives up
                 self.stopped = true;
                 return true;
             }
-            head += 1;
             for k in 0..self.bins[idx].len() {
+                // one literal can have a hundred thousand two-literal
+                // clauses: paid one by one, the limit holds inside the list
+                if self.clock.pay(1) {
+                    self.stopped = true;
+                    return true;
+                }
                 let m = self.bins[idx][k];
                 match self.value(m) {
                     0 => self.set(m),
@@ -311,6 +378,7 @@ impl<'a> Prop<'a> {
             let fl = -l;
             let fi = li(fl);
             if self.watch[fi].is_empty() {
+                self.head += 1;
                 continue;
             }
             let ws = std::mem::take(&mut self.watch[fi]);
@@ -377,6 +445,7 @@ impl<'a> Prop<'a> {
             if !ok {
                 return false;
             }
+            self.head += 1;
         }
         true
     }
@@ -386,6 +455,18 @@ impl<'a> Prop<'a> {
             let l = self.trail.pop().unwrap();
             self.val[l.unsigned_abs() as usize] = 0;
         }
+        self.head = self.head.min(mark);
+    }
+
+    /// Go on after a cut, with nothing assumed: finish what the cut left of
+    /// the root's own propagation (a unit that was added just before it).
+    fn resume(&mut self) {
+        debug_assert_eq!(self.trail.len(), self.root);
+        self.stopped = false;
+        if !self.conflict && !self.propagate() {
+            self.conflict = true;
+        }
+        self.root = self.trail.len();
     }
 
     /// Setting the literals runs into a conflict by propagation alone: the
@@ -620,15 +701,14 @@ impl<'a> Reader<'a> {
     /// Out of budget, stopped from outside, or the proof file failed.
     /// Writes the solver's work clock.
     fn spent(&mut self) -> bool {
-        if self.p.clock.look() || self.p.stopped {
+        if self.p.clock.look() || self.p.stopped || self.proof_failed() {
             self.halt = true;
         }
-        if let Some(w) = self.derived.proof.as_ref() {
-            if w.failed {
-                self.halt = true;
-            }
-        }
         self.halt
+    }
+
+    fn proof_failed(&self) -> bool {
+        self.derived.proof.as_ref().map_or(false, |w| w.failed)
     }
 
     /// Is the clause there already (propagation runs it every way), a `rup`
@@ -1571,15 +1651,17 @@ fn rank_key(t: &[i32]) -> (std::cmp::Reverse<usize>, u32, Vec<i32>) {
 pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &AtomicBool) {
     let base = *ticks;
     let size: u64 = f.lits.len() as u64 + f.len() as u64;
-    // building the propagator walks the formula, and so does the first look
-    // at its two-literal clauses: without room for both nothing is started.
+    let tables: u64 = 3 * 2 * (f.vars as u64 + 1);
+    // building the propagator makes its tables and walks the formula, and
+    // the first look at the two-literal clauses walks it again: without
+    // room for all of that nothing is started (and nothing allocated).
     // Everything after that pays as it runs
-    if base.saturating_add(size.saturating_mul(2)) > budget || stop.load(Ordering::Relaxed) {
+    if base.saturating_add(size.saturating_mul(2)).saturating_add(tables) > budget || stop.load(Ordering::Relaxed) {
         println!("c numbers status=no-budget");
         derived.notes.push("numbers: not read, no work left for it".to_string());
         return;
     }
-    let clock = Clock { ticks, stop, base, budget, work: 0, looked: 0, over: false };
+    let clock = Clock::new(ticks, stop, budget);
     let p = Prop::new(f, clock);
     let mut rd = Reader { p, derived, halt: false, counts: Counts::default(), numbers: Vec::new(), found: Vec::new() };
     rd.p.clock.look();
@@ -1662,6 +1744,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     // direct links only: drop u -> w when u -> x -> w
     let mut direct: HashMap<i32, Vec<i32>> = HashMap::new();
     let mut pred: HashMap<i32, Vec<i32>> = HashMap::new();
+    // (without room for the sort of the keys the clock ends the pass)
     if !rd.spent() && rd.p.clock.room(2 * edges.len() as u64) {
         rd.p.clock.pay(2 * edges.len() as u64);
         let mut keys: Vec<i32> = edges.keys().copied().collect();
@@ -1717,14 +1800,14 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     // the chains read already, under a count or not: one reading each
     let mut tried: HashSet<Vec<i32>> = HashSet::new();
     let mut partial = false;
-    let mut counted_seen = 0u64;
     let mut tested = 0usize;
+    // the variables of the numbers under a count read so far
+    let mut claimed: HashSet<u32> = HashSet::new();
+    if !rd.spent() {
+        rd.p.clock.allow = rd.counts.at_paths.saturating_add(READ_FIRST);
+    }
     for lits in &cands {
         if rd.spent() {
-            break;
-        }
-        if rd.p.clock.work - rd.counts.at_paths > READ_FIRST.saturating_add(READ_MORE.saturating_mul(counted_seen)) {
-            partial = true;
             break;
         }
         let lits = match rd.prune(lits) {
@@ -1748,9 +1831,25 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
             continue;
         }
         if !index.contains_key(&num.lits) {
-            counted_seen += 1;
+            // a number whose bits no number before it holds earns the tests
+            // more work. Another reading of the same bits earns nothing: a
+            // formula can have thousands of chains over one set of variables
+            if num.lits.iter().all(|&l| !claimed.contains(&var(l))) {
+                rd.p.clock.allow = rd.p.clock.allow.saturating_add(READ_MORE);
+            }
+            claimed.extend(num.lits.iter().map(|&l| var(l)));
             index.insert(num.lits.clone(), seen.len());
             seen.push(num);
+        }
+    }
+    // When the allowance ended the tests (in the middle of one, it may be),
+    // the candidates left are not tested and what was read is linked. The
+    // limit and the stop flag end the pass as before
+    if rd.p.clock.lift() {
+        partial = true;
+        if !rd.proof_failed() {
+            rd.halt = false;
+            rd.p.resume();
         }
     }
     rd.counts.candidates = tested;
@@ -1937,23 +2036,85 @@ mod tests {
     fn the_clock_looks_every_step_of_work_and_keeps_its_verdict() {
         let stop = AtomicBool::new(false);
         let mut ticks = 100u64;
-        let mut c = Clock { ticks: &mut ticks, stop: &stop, base: 100, budget: 100 + 3 * Clock::STEP, work: 0, looked: 0, over: false };
+        let mut c = Clock::new(&mut ticks, &stop, 100 + 3 * Clock::STEP);
         assert!(!c.pay(Clock::STEP - 1));
         assert_eq!(*c.ticks, 100, "no look before a step's worth of work");
         assert!(!c.pay(1));
         assert_eq!(*c.ticks, 100 + Clock::STEP, "the clock is written at the look");
         // room is counted to the limit itself
         assert!(c.room(2 * Clock::STEP));
-        assert!(!c.room(2 * Clock::STEP + 1));
         assert!(!c.pay(2 * Clock::STEP));
         assert!(c.pay(Clock::STEP), "past the limit");
-        assert!(c.pay(0) && c.over, "and it stays over");
+        assert!(c.pay(0) && c.over && !c.soft, "and it stays over");
+        assert!(!c.lift(), "the limit's verdict is not taken back");
+        assert!(c.over);
+        // a piece of work with no room for it ends the work, though the clock is under its limit
+        let mut ticks = 0u64;
+        let mut c = Clock::new(&mut ticks, &stop, 1000);
+        assert!(!c.pay(10) && !c.room(991));
+        assert!(c.over && !c.soft && c.pay(0));
         // the stop flag ends it too, at the next look
         let mut ticks = 0u64;
-        let mut c = Clock { ticks: &mut ticks, stop: &stop, base: 0, budget: u64::MAX, work: 0, looked: 0, over: false };
+        let mut c = Clock::new(&mut ticks, &stop, u64::MAX);
         stop.store(true, Ordering::Relaxed);
         assert!(!c.pay(1));
         assert!(c.pay(Clock::STEP));
+        assert!(!c.lift());
+    }
+
+    #[test]
+    fn an_allowance_ends_a_part_and_can_be_lifted() {
+        let stop = AtomicBool::new(false);
+        let mut ticks = 0u64;
+        let mut c = Clock::new(&mut ticks, &stop, u64::MAX);
+        c.allow = 2 * Clock::STEP;
+        assert!(!c.pay(2 * Clock::STEP), "the allowance itself may be reached");
+        assert!(c.pay(Clock::STEP) && c.over && c.soft);
+        assert!(c.lift(), "the allowance's verdict is taken back");
+        assert!(!c.over && c.allow == u64::MAX && !c.pay(100 * Clock::STEP));
+        // a piece that does not fit the allowance ends the part as well
+        c.allow = c.work + 10;
+        assert!(!c.room(11) && c.over && c.soft);
+        assert!(c.lift() && c.room(11));
+    }
+
+    /// A unit whose propagation the allowance cuts: after the allowance is
+    /// lifted the propagation is finished from where it stood, and the
+    /// root is whole.
+    #[test]
+    fn a_cut_propagation_is_finished_when_the_work_goes_on() {
+        let n = 100_000i32;
+        let chain: Vec<Vec<i32>> = (1..n).map(|v| vec![-v, v + 1]).collect();
+        let f = formula(n, &chain);
+        let stop = AtomicBool::new(false);
+        let mut ticks = 0u64;
+        let mut p = Prop::new(&f, Clock::new(&mut ticks, &stop, u64::MAX));
+        assert!(!p.stopped && p.root == 0);
+        p.clock.allow = p.clock.work + n as u64 / 2;
+        p.add(&[1]);
+        assert!(p.stopped && p.head < p.trail.len(), "the unit's propagation had to be cut");
+        assert!(p.clock.lift());
+        p.resume();
+        assert!(!p.stopped && !p.conflict);
+        assert_eq!((p.trail.len(), p.root, p.head), (n as usize, n as usize, n as usize));
+        assert_eq!(p.value(n), 1);
+    }
+
+    /// One literal with 100,000 two-literal clauses: the limit holds
+    /// inside its list.
+    #[test]
+    fn the_limit_holds_inside_one_literals_list_of_two_literal_clauses() {
+        let n = 100_000i32;
+        let star: Vec<Vec<i32>> = (2..=n).map(|v| vec![-1, v]).collect();
+        let f = formula(n, &star);
+        let stop = AtomicBool::new(false);
+        let mut ticks = 0u64;
+        let mut p = Prop::new(&f, Clock::new(&mut ticks, &stop, u64::MAX));
+        let before = p.clock.work;
+        p.clock.budget = before + 1000;
+        assert!(p.assume(&[1]));
+        assert!(p.stopped);
+        assert!(p.clock.work - before <= 1000 + Clock::STEP + 2, "spent {} past a limit of 1000", p.clock.work - before);
     }
 
     /// One long propagation: x1 -> x2 -> ... -> xn. The clock is written on
@@ -1966,7 +2127,7 @@ mod tests {
         let f = formula(n, &chain);
         let stop = AtomicBool::new(false);
         let mut ticks = 7u64;
-        let clock = Clock { ticks: &mut ticks, stop: &stop, base: 7, budget: u64::MAX, work: 0, looked: 0, over: false };
+        let clock = Clock::new(&mut ticks, &stop, u64::MAX);
         let mut p = Prop::new(&f, clock);
         assert!(!p.stopped && !p.conflict);
         let loaded = p.clock.work;
@@ -1994,7 +2155,7 @@ mod tests {
         let f = formula(n, &[(1..=n).collect::<Vec<i32>>()]);
         let stop = AtomicBool::new(false);
         let mut ticks = 0u64;
-        let clock = Clock { ticks: &mut ticks, stop: &stop, base: 0, budget: u64::MAX, work: 0, looked: 0, over: false };
+        let clock = Clock::new(&mut ticks, &stop, u64::MAX);
         let mut p = Prop::new(&f, clock);
         let loaded = p.clock.work;
         // x3 .. xn off first (the watches sit on x1 and x2), then x2: one scan of the whole clause
