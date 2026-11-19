@@ -61,7 +61,7 @@ MAX_BITS = 62
 def reader_clauses(n_vars, clauses):
     """What tools/number_read.py adds when it reads as the pass does."""
     r = nr.Reading(n_vars, clauses, full_scan=0, pairs=False, partial=False, short_limit=-1, kinds=KINDS,
-                   proved_only=True, max_bits=MAX_BITS, inputs_only=True, counted_only=True)
+                   proved_only=True, max_bits=MAX_BITS, inputs_only=True, counted_only=True, end_fan=nr.END_FAN)
     if r.truncated:
         raise RuntimeError("the reader stopped at its budget")
     return [list(c) for c in r.link_clauses()], r
@@ -256,6 +256,31 @@ def cmd_selftest(a):
         assert "reports 5 added" in compare("toy", want, got2, rep2)
         got2, rep2 = pass_clauses(fake(want, ok_line.replace("status=read", "status=stopped")), cnf, d)
         assert "status=stopped" in compare("toy", want, got2, rep2)
+        # many ends on one bit: six variables that each need x at its top value and six
+        # that need it at 0, no two of a kind on at once.  The ends are not followed, the
+        # chain is the three bits, and the reader and the pass give the toy's four clauses
+        fan = [list(c) for c in cl]
+        for i in range(8, 14):
+            fan.append([-i, 3])
+            fan += [[-i, -k] for k in range(i + 1, 14)]
+        for j in range(14, 20):
+            fan.append([-j, -1])
+            fan += [[-j, -k] for k in range(j + 1, 20)]
+        want1, r1 = reader_clauses(19, fan)
+        assert want1 == want and r1.notes["fan_links"] >= 12, (want1, dict(r1.notes))
+        f1 = Path(d) / "fan.cnf"
+        write_cnf(f1, 19, fan)
+        got1, rep1 = pass_clauses(a.solver, f1, d)
+        assert compare("fan", want1, got1, rep1) == "" and int(rep1["fanlinks"]) == r1.notes["fan_links"], (got1, rep1)
+        # a helper on each end (8 needs the top value and sets 10; 9 needs 0 and sets
+        # 11): the chain of five is not under a count, the stretch the count reads is
+        core = [list(c) for c in cl] + [[-8, 3], [-8, 10], [-9, -1], [-9, 11]]
+        want2, r2 = reader_clauses(11, core)
+        assert want2 == want and r2.notes["core_cut"] == 1, (want2, dict(r2.notes))
+        f2 = Path(d) / "core.cnf"
+        write_cnf(f2, 11, core)
+        got2, rep2 = pass_clauses(a.solver, f2, d)
+        assert compare("core", want2, got2, rep2) == "" and rep2["corecuts"] == "1", (got2, rep2)
         # a formula that its own units refute: both say nothing, and that is a match
         dead = Path(d) / "dead.cnf"
         write_cnf(dead, 1, [[1], [-1]])

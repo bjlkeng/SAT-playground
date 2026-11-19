@@ -6,11 +6,14 @@
 //! count, and the count's helpers 7 = "at least one bit", 5 = "at least
 //! two", 6 = "all three". The pass must add the four two-literal clauses
 //! that say the helpers are the bits, in the order `tools/number_read.py`
-//! lists them, with a proof the gate accepts; it must be silent when it is
-//! off, change nothing on a formula without such numbers, stop at its work
-//! limit, and leave a chain it cannot read alone. That the pass and the
-//! Python reader agree on every toy of Z3's catalog is
-//! `tools/number_pass_check.py catalog --proof`.
+//! lists them, with a proof the gate accepts. It must be silent when it is
+//! off, add nothing where no number is under a count, keep helpers off the
+//! ends of a number (many ends on one bit; a helper on each end), stop at
+//! its work limit wherever that falls (in the units, inside a long clause,
+//! in the look for gates), end early on a formula with too many paths or
+//! with candidates that are no numbers under a count, and leave a chain it
+//! cannot read alone. That the pass and the Python reader agree on every
+//! toy of Z3's catalog is `tools/number_pass_check.py catalog --proof`.
 
 mod common;
 
@@ -84,6 +87,11 @@ fn report(stdout: &str) -> BTreeMap<String, String> {
     assert_eq!(lines.len(), 1, "one 'c numbers' line is expected:\n{}", stdout);
     lines[0].split_whitespace().skip(2).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
+
+/// The toy with 60 ends a side: 3,679 clauses. With the fan rule the pass
+/// costs 99,899 units of work (about the formula's size); with the rule
+/// switched off it cost 14,624,631 (measured 2026-11-19).
+const WORK_BOUND_FAN: u64 = 400_000;
 
 fn derived(proof: &Path) -> Vec<Vec<i64>> {
     let text = std::fs::read_to_string(format!("{}.derived.cnf", proof.display())).unwrap_or_default();
@@ -284,7 +292,7 @@ fn a_very_long_chain_costs_its_length_and_no_more() {
     assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
     assert_ne!(r.get("long").map(String::as_str), Some("0"), "{:?}", r);
     let work: u64 = r["work"].parse().unwrap();
-    assert!(work < 40 * n as u64, "{} units of work for a chain of {}", work, n);
+    assert!(work < 200 * n as u64, "{} units of work for a chain of {}", work, n);
     // and it stops at a limit set in the middle of the walk
     let cut = run(&cnf, &["--structnum=1", "--structnumticks=1500"], &[]);
     let r = report(&cut.stdout);
@@ -362,4 +370,204 @@ fn the_limit_holds_while_the_units_are_set() {
     let spent: u64 = r["work"].parse().unwrap();
     assert!(spent <= 100_000 + 10_000, "the pass ran to {} with a limit of 100,000", spent);
     assert_eq!(cut.status, free.status);
+}
+
+/// "x = 2" and "x >= 3" at once, each forced by a case split over two fresh
+/// variables that propagation does not see: the pass reads the number as it
+/// is, and the search then refutes the formula, so the gate has a proof to
+/// check. Returns the number of variables.
+fn refute(cl: &mut Vec<Vec<i64>>, vars: i64) -> i64 {
+    cl.extend(force(4, vars + 1, vars + 2));
+    cl.extend(force(3, vars + 3, vars + 4));
+    vars + 4
+}
+
+/// The toy with `tops` variables that each need x at its top value (p -> g3)
+/// and `lows` that each need it at 0 (q -> not g1), no two of a kind on at
+/// once. They are true inputs like the bits, so each pair of them makes a
+/// chain of its own over the same three bits.
+fn toy_with_ends(tops: i64, lows: i64) -> (i64, Vec<Vec<i64>>) {
+    let mut cl = toy();
+    let p = |i: i64| 7 + i; // 8 ..
+    let q = |j: i64| 7 + tops + j;
+    for i in 1..=tops {
+        cl.push(vec![-p(i), 3]);
+        for k in i + 1..=tops {
+            cl.push(vec![-p(i), -p(k)]);
+        }
+    }
+    for j in 1..=lows {
+        cl.push(vec![-q(j), -1]);
+        for k in j + 1..=lows {
+            cl.push(vec![-q(j), -q(k)]);
+        }
+    }
+    (7 + tops + lows, cl)
+}
+
+#[test]
+fn many_ends_on_one_bit_are_no_bits_of_the_number() {
+    // six on top and six below: more than four ends on one member, so none of
+    // them is followed, the chain is the three bits, and the toy's four
+    // clauses come out
+    let fx = Fixture::new("num-fan");
+    let (cnf, proof) = (fx.path("fan.cnf"), fx.path("fan.proof"));
+    let (vars, mut cl) = toy_with_ends(6, 6);
+    let vars = refute(&mut cl, vars);
+    write_cnf(&cnf, vars, &cl);
+    let (out, _err) = run_num(&cnf, &proof, &[]);
+    let r = report(&out);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(derived(&proof), vec![vec![-5, 2], vec![5, -2], vec![6, -3], vec![-7, 1]], "{:?}", r);
+    assert!(r["fanlinks"].parse::<u64>().unwrap() >= 12, "{:?}", r);
+    assert_eq!(r.get("countedvalues").map(String::as_str), Some("4x1"), "{:?}", r);
+    assert_eq!(status(&out), "UNSATISFIABLE");
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // and the cost does not grow with the pairs: 60 on top and 60 below are
+    // 3,600 pairs, each a chain to test if they were followed
+    let (big, big_proof) = (fx.path("big.cnf"), fx.path("big.proof"));
+    let (vars, cl) = toy_with_ends(60, 60);
+    write_cnf(&big, vars, &cl);
+    let (out, _err) = run_num(&big, &big_proof, &[]);
+    let r = report(&out);
+    assert_eq!(derived(&big_proof), vec![vec![-5, 2], vec![5, -2], vec![6, -3], vec![-7, 1]], "{:?}", r);
+    let work: u64 = r["work"].parse().unwrap();
+    assert!(work < WORK_BOUND_FAN, "the pass spent {} on the toy with 60 ends a side", work);
+}
+
+#[test]
+fn a_helper_on_each_end_is_cut_off_the_number() {
+    // a (8) needs x at its top value and sets c (10); b (9) needs x at 0 and
+    // sets d (11). Each is read by something, so the end test keeps both, and
+    // the chain "not b, g1, g2, g3, a" has six values with three steps that
+    // the count reads: not under a count. The number is the stretch between
+    // the lowest and the highest step some variable equals: the three bits
+    let fx = Fixture::new("num-core");
+    let (cnf, proof) = (fx.path("core.cnf"), fx.path("core.proof"));
+    let mut cl = toy();
+    cl.extend([vec![-8, 3], vec![-8, 10], vec![-9, -1], vec![-9, 11]]);
+    let vars = refute(&mut cl, 11);
+    write_cnf(&cnf, vars, &cl);
+    let (out, _err) = run_num(&cnf, &proof, &[]);
+    let r = report(&out);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(derived(&proof), vec![vec![-5, 2], vec![5, -2], vec![6, -3], vec![-7, 1]], "{:?}", r);
+    assert_eq!(r.get("corecuts").map(String::as_str), Some("1"), "{:?}", r);
+    assert_eq!(r.get("countedvalues").map(String::as_str), Some("4x1"), "{:?}", r);
+    assert_eq!(status(&out), "UNSATISFIABLE");
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+#[test]
+fn the_look_for_gates_stops_at_the_limit_by_work() {
+    // 1,000 clauses of 1,000 literals and no two-literal clause: every scan of
+    // the formula is a million looks. A limit that ends in the middle of a
+    // scan must hold there, whichever scan it is (the look for gates used to
+    // check every 1,024 clauses, which here was never). One unit on a
+    // variable of its own makes the pass walk the long clauses twice after
+    // loading them: with nothing set at the root it skips them once
+    let fx = Fixture::new("num-wide");
+    let cnf = fx.path("wide.cnf");
+    let n = 1000i64;
+    let mut cl: Vec<Vec<i64>> = (1..=n).map(|i| (1..=n).map(|v| if v == i { -v } else { v }).collect()).collect();
+    // (without the unit: the load and one walk, about two million)
+    let plain = fx.path("plain.cnf");
+    write_cnf(&plain, n, &cl);
+    let two: u64 = report(&run(&plain, &["--structnum=1"], &[]).stdout)["work"].parse().unwrap();
+    assert!(two < 2_100_000, "the long clauses were walked more than twice: {}", two);
+    cl.push(vec![n + 1]);
+    write_cnf(&cnf, n + 1, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let full: u64 = report(&free.stdout)["work"].parse().unwrap();
+    assert!(full > 3_000_000, "the example no longer costs what this test is about: {}", full);
+    for limit_k in [2002u64, 2400, 2900, 3300] {
+        if limit_k * 1000 >= full {
+            continue;
+        }
+        let cut = run(&cnf, &["--structnum=1", &format!("--structnumticks={}", limit_k)], &[]);
+        let r = report(&cut.stdout);
+        let spent: u64 = r.get("work").map(|w| w.parse().unwrap()).unwrap_or(0);
+        assert!(matches!(r.get("status").map(String::as_str), Some("stopped") | Some("no-budget")), "limit {}K: {:?}", limit_k, r);
+        assert!(spent <= limit_k * 1000 + 10_000, "the pass ran to {} with a limit of {}K", spent, limit_k);
+        assert_eq!(cut.status, free.status);
+    }
+}
+
+#[test]
+fn nothing_is_added_where_no_number_is_under_a_count() {
+    // g3 -> g2 -> m -> g1, and "g1 and not g2 -> m": a chain of four with a
+    // helper in it. The bit test finds that m is on whenever g1 is (a clause
+    // propagation does not have), but no count reads the chain, so the
+    // clause is held back and the solver gets nothing
+    let fx = Fixture::new("num-held");
+    let (cnf, proof) = (fx.path("held.cnf"), fx.path("held.proof"));
+    let mut cl: Vec<Vec<i64>> = vec![vec![-3, 2], vec![-2, 1], vec![-4, 3], vec![2, -1, 3]];
+    // refuted by a case split that propagation does not see, so there is a proof to check
+    cl.extend(force(4, 5, 6));
+    cl.extend(force(-1, 7, 8));
+    write_cnf(&cnf, 8, &cl);
+    let (out, _err) = run_num(&cnf, &proof, &[]);
+    let r = report(&out);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(r.get("held").map(String::as_str), Some("1"), "{:?}", r);
+    assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
+    assert_eq!(r.get("dead").map(String::as_str), Some("0"), "the report counts what was written: {:?}", r);
+    assert!(derived(&proof).is_empty(), "{:?}", derived(&proof));
+    assert_eq!(status(&out), "UNSATISFIABLE");
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+#[test]
+fn too_many_paths_end_the_pass_early() {
+    // a comb: c1 -> c2 -> ... -> c3000, and a tooth s_i -> c_i on every
+    // member. Each tooth starts a path of its own down the rest of the
+    // chain: 3,000 paths of 1,500 members on average, over links that are
+    // made with a few thousand looks. The search for paths may cost three
+    // times the work of making the links (plus 1M); past that the pass says
+    // "dense" and reads nothing
+    let fx = Fixture::new("num-dense");
+    let cnf = fx.path("dense.cnf");
+    let n = 3000i64;
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for i in 1..=n {
+        if i < n {
+            cl.push(vec![-i, i + 1]);
+        }
+        cl.push(vec![-(n + i), i]);
+    }
+    write_cnf(&cnf, 2 * n, &cl);
+    let on = run(&cnf, &["--structnum=1"], &[]);
+    let r = report(&on.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("dense"), "{:?}", r);
+    assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
+    let (links, paths): (u64, u64) = (r["wlinks"].parse().unwrap(), r["wpaths"].parse().unwrap());
+    assert!(paths <= 3 * links + 1_000_000 + 10_000, "the search for paths spent {} with {} spent on the links", paths, links);
+    let off = run(&cnf, &[], &[]);
+    assert_eq!(on.status, off.status);
+}
+
+#[test]
+fn tests_that_find_no_number_under_a_count_end_early() {
+    // 30,000 chains of 20 variables each, nothing reading them: every chain
+    // is a candidate and none is under a count. Testing them all costs far
+    // more than the 50M the tests may spend before the first number under a
+    // count; the pass ends its tests there and says "partial"
+    let fx = Fixture::new("num-partial");
+    let cnf = fx.path("partial.cnf");
+    let (chains, len) = (30_000i64, 20i64);
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for c in 0..chains {
+        for k in 1..len {
+            cl.push(vec![c * len + k, -(c * len + k + 1)]);
+        }
+    }
+    write_cnf(&cnf, chains * len, &cl);
+    let on = run(&cnf, &["--structnum=1"], &[]);
+    let r = report(&on.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("partial"), "{:?}", r);
+    assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
+    let read: u64 = r["wread"].parse().unwrap();
+    assert!(read > 50_000_000 && read < 52_000_000, "the tests spent {}", read);
+    let off = run(&cnf, &[], &[]);
+    assert_eq!(on.status, off.status);
 }

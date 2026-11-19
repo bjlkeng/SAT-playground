@@ -102,7 +102,11 @@ FULL_SCAN_VARS = 2_000            # ask propagation about every free variable up
 PARTIAL_SAMPLE = 2_000            # partial readers tried when not all of them are
 MAX_CLAUSES = 30_000_000
 MAX_VALUES = 4096                 # a longer chain is not read value by value
-PAIR_FAN = 8                      # a reader shared by more numbers than this ties no pairs
+PAIR_FAN = 8
+# More ends than this on one member of a chain, and none of them is read as the
+# next bit (Reading's `end_fan`, see Reading._candidates).  In the catalog a real
+# end bit shares its neighbour with two other ends at most.
+END_FAN = 4                      # a reader shared by more numbers than this ties no pairs
 SHORT_LIMIT = 300                 # the census: more two-member chains than this are not read
 
 
@@ -220,7 +224,7 @@ def small_sat(clauses, limit=400):
 class Reading:
     def __init__(self, n_vars, clauses, budget=DEFAULT_BUDGET, full_scan=FULL_SCAN_VARS, pairs=True, partial="sample",
                  short_limit=None, kinds=None, proved_only=False, max_bits=MAX_VALUES - 1,
-                 inputs_only=False, counted_only=False):
+                 inputs_only=False, counted_only=False, end_fan=None):
         """`partial`: True links every partial reader (a placement that needs
         three numbers; there can be a million); "sample" tries PARTIAL_SAMPLE
         of them after the full readers are linked and only counts what is
@@ -242,7 +246,10 @@ class Reading:
         gate next to a chain that reads two ways) is left out.
         `counted_only`: only a number under a count (is_counted) gets
         clauses.  The solver's pass sets both: it is meant for integers that
-        a model counts over, and must stay cheap and silent on a circuit."""
+        a model counts over, and must stay cheap and silent on a circuit.
+        `end_fan`: with more ends than this on one member of a chain, none
+        of them is read as its next bit (see _candidates; the solver's pass
+        sets END_FAN).  Off when None."""
         self.n_vars = n_vars
         self.budget = budget
         self.full_scan = full_scan
@@ -254,6 +261,7 @@ class Reading:
         self.max_bits = max_bits
         self.inputs_only = inputs_only
         self.counted_only = counted_only
+        self.end_fan = end_fan
         self.shaped_any = set()
         self.added = []                # every clause given to propagation, in order: (clause, kind or "step")
         self.defs = {}
@@ -492,6 +500,13 @@ class Reading:
             if lits is None or tuple(lits) in seen:
                 continue
             num = self._trim(self._read(lits))
+            if self.counted_only:
+                # only a number under a count goes on: no other chain gets clauses, and
+                # none takes part in the choice between chains that overlap
+                num = self._core(num)
+                if not is_counted(num):
+                    self.notes["not_counted"] += 1
+                    continue
             seen.setdefault(tuple(num.lits), num)
         # who reads whom
         full = {}
@@ -545,7 +560,45 @@ class Reading:
     def _candidates(self, direct, pred, per_source=64, total=20000):
         """Maximal paths of direct links, top first; past the limits, one
         longest path per start.  Each is returned lowest bit first, in one
-        orientation (a chain and its mirror are one number)."""
+        orientation (a chain and its mirror are one number).
+
+        With `end_fan` set, ends that many share are cut off first.  A
+        member x of a chain can have many ends hanging on it: literals that
+        lead into x and that nothing leads into, or literals x leads into
+        that lead nowhere.  Each of them makes a path of its own over the
+        same members, and with a fan at both ends every pair does.  (A label
+        of the pyramid has hundreds of placements above its highest bit,
+        "this placement needs the label at its top value", and hundreds
+        below its lowest one: one chain of six bits came back as 8,425
+        candidates.)  Two ends on one member cannot both be its next bit,
+        and among many none stands out, so past `end_fan` of them their
+        links are not followed: the chain is read without them, and they
+        come out as its readers."""
+        cut = set()
+        top, bottom = set(), set()      # the members a fan was cut from: ends as they stand
+        if self.end_fan is not None:
+            for x, ps in pred.items():
+                srcs = [u for u in ps if not pred.get(u)]
+                if len(srcs) > self.end_fan:
+                    cut.update((u, x) for u in srcs)
+                    top.add(x)
+            for x, ws in direct.items():
+                snks = [w for w in ws if not direct.get(w)]
+                if len(snks) > self.end_fan:
+                    cut.update((x, w) for w in snks)
+                    bottom.add(x)
+        if cut:
+            self.notes["fan_links"] = len(cut)
+            kept = {}
+            for u, outs in direct.items():
+                d = {w for w in outs if (u, w) not in cut}
+                if d:
+                    kept[u] = d
+            direct = kept
+            pred = defaultdict(set)
+            for u, outs in direct.items():
+                for w in outs:
+                    pred[w].add(u)
         height = {}
         state = {}
         for root in list(direct):
@@ -572,12 +625,15 @@ class Reading:
             # neither: the lowest member when two links lead into it from
             # literals that are themselves implied by something, the highest
             # member the same way round
+            # (a member that a fan was cut from stays: it is an end only
+            # because its many ends were taken away, and the tests below
+            # say whether it is a bit)
             path = list(path)
-            while len(path) >= 2 and sum(1 for w in direct.get(path[0], ()) if direct.get(w)) >= 2:
+            while len(path) >= 2 and path[0] not in top and sum(1 for w in direct.get(path[0], ()) if direct.get(w)) >= 2:
                 path.pop(0)
-            while len(path) >= 2 and sum(1 for u in pred.get(path[-1], ()) if pred.get(u)) >= 2:
+            while len(path) >= 2 and path[-1] not in bottom and sum(1 for u in pred.get(path[-1], ()) if pred.get(u)) >= 2:
                 path.pop()
-            if len(path) < 2:
+            if len(path) < (3 if self.short_limit is not None and self.short_limit < 0 else 2):
                 return
             if len(path) > 4 * self.max_bits:
                 # far past what can be read value by value, even with a few
@@ -682,6 +738,30 @@ class Reading:
                     break
             else:
                 break
+        return num
+
+    def _core(self, num):
+        """For the solver's pass (`counted_only`): the number under a count
+        is the stretch of the chain between its lowest and its highest step
+        that some variable equals.  A member past that stretch is a helper
+        that only implies the lowest or the highest value.  (The pyramid's
+        increasing-order option hangs one on each end of a label: six bits
+        came back as a chain of eight, nine values with six steps read by
+        the count, and so not "under a count" at all.)  A count gives every
+        bit back as a threshold, so the bits of the number are inside the
+        stretch.  A chain that is under a count as it stands is left alone
+        (one step may lack its variable: cutting there would take a real
+        bit), and so is one of which fewer than three members would remain."""
+        while not num.unread and num.n > 3 and not is_counted(num):
+            live = num.live()
+            steps = covered_steps(num, live)
+            if len(steps) < 2:
+                break
+            lo, hi = min(steps), max(steps)
+            if hi - lo + 1 < 3 or (lo == 1 and hi == num.n):
+                break
+            num = self._read(num.lits[lo - 1:hi])
+            self.notes["core_cut"] += 1
         return num
 
     # ------------------------------------------------------------------
@@ -983,7 +1063,14 @@ class Reading:
     def link_clauses(self):
         """Every clause the reading added, in the order it added them: a
         link's steps come right before it, and a link may lean on the ones
-        before it.  Read with `kinds` set to get a chosen part."""
+        before it.  Read with `kinds` set to get a chosen part.
+
+        With `counted_only` (the solver's pass) there are none unless a
+        number under a count was read: the bit test finds clauses on any
+        chain of implications, a circuit's too, and the pass is meant to
+        add nothing there.  `added` still holds what was found."""
+        if self.counted_only and not any(is_counted(num) for num in self.numbers):
+            return []
         return [c for c, _k in self.added]
 
 
@@ -1054,6 +1141,25 @@ def profile_of(num):
         elif k in ("eq", "ne"):
             tests.add(t if k == "eq" else f)
     return len(live), len(cuts), len(tests)
+
+
+def covered_steps(num, live=None):
+    """The steps of the chain that some variable equals: step k is the one
+    from value k - 1 to value k (member k - 1 goes on).  A variable equals it
+    when it is on from value k upwards and off below, or the other way
+    round, and both values are live."""
+    if live is None:
+        live = num.live()
+    steps = set()
+    for t, f in num.readers.values():
+        k = kind_of(t, f, live)
+        if k not in ("ge", "le"):
+            continue
+        up = t if k == "ge" else f
+        first = next(v for v in live if (up >> v) & 1)
+        if first >= 1 and (first - 1) not in num.dead:
+            steps.add(first)
+    return steps
 
 
 def is_counted(num):
@@ -1201,9 +1307,10 @@ SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
 STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0",
          "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0", "--ctlsplit=0"]
 # the census by the solver's own pass (src/structnum.rs): its report line, field for field
-SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "countedvalues", "added", "equal", "bound", "dead", "unit",
+SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "countedvalues", "added", "held", "equal", "bound", "dead", "unit",
                   "steps", "there", "noproof", "holes", "partial", "candidates", "free", "gates", "ring", "notbit", "ends",
-                  "long", "manypaths", "codes", "codetests", "codebits", "work", "error"]
+                  "long", "manypaths", "fanlinks", "corecuts", "codes", "codetests", "codebits",
+                  "wload", "wscan", "wlinks", "wpaths", "wread", "work", "error"]
 
 
 def solver_row(job):
@@ -1318,7 +1425,12 @@ def cmd_report(a):
     # the values of the numbers under a count (not of every chain): each table kind has that column
     values = lambda r: (r.get("counted_values") if "counted_values" in r else r.get("countedvalues", "")) or ""
     stopped = sum(1 for r in rows if r.get("stopped") or r.get("status") in ("stopped", "no-budget"))
-    print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; stopped at the limit: {stopped}")
+    # the solver's pass has two more ways to end early: too many paths for chains of bits
+    # (nothing is read), and tests that ran out of their allowance (what was read is linked)
+    dense = sum(1 for r in rows if r.get("status") == "dense")
+    partial = sum(1 for r in rows if r.get("status") == "partial")
+    print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; stopped at the limit: {stopped}; "
+          f"too many paths, nothing read: {dense}; not every candidate tested: {partial}")
     read = [r for r in rows if not r["error"]]
     print(f"read: {len(read)}; with a chain: {sum(1 for r in read if num(r, 'numbers'))}; with a number under a count: "
           f"{sum(1 for r in read if num(r, 'counted'))}; with clauses to add: {sum(1 for r in read if all_links(r))}")
