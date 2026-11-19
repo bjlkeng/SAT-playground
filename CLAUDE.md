@@ -157,6 +157,32 @@ work is **solver 13** and the RL scheduler on top of it.
   "The divider pass's pairs asked of one solver";
   `tools/div_chain_check.py` runs a cell through both chains). The 2026
   holdout was not looked at for it.
+- **Numbers stored as sorted bits (epic `SAT-playground-d96.9`, 2026-11-18/19)** —
+  Z3 writes an integer as sorted bits and a test on it as a count, and
+  propagation then runs from the bits to the test and not back; the 20 Bel's
+  Pyramid cells are written that way. Built: a catalog of Z3's encodings
+  (`tools/z3_catalog.py`, venv `~/.cache/sat13-z3/venv`), a reader by meaning
+  (`tools/number_read.py`), the reading as a structure pass
+  (`src/structnum.rs`, `--structnum=1`, **off by default**; held to the reader
+  clause for clause by `tools/number_pass_check.py`) and a census of 2025 and
+  of 2020 to 2024 (`benchmarks/rl/numbers_2025.tsv`, `numbers_prior.tsv`). The
+  pass reads all 20 pyramid cells (113,999 clauses; a placement then sets its
+  label bits in 2,930 to 3,000 of 3,000 sampled cases, 359 to 1,362 before).
+  With the shipped limits it costs 10.9G of work over the 2025 suite (0.14%
+  of a run's tick PAR-2 sum) and leaves the search as it is on every cell
+  where it writes nothing (368 cells compared field for field). **It does
+  not make the search faster**: on the 27 cells of 2025 it changes, under a
+  work budget and up to eight seeds, 127 solved runs against 132 without it
+  (pyramid cells with a model 44 v 46 of 80; the refuted ones 0.963 of the
+  work); on the 69 prior-year files it changes, 76 v 76. Two-seed runs
+  before that had looked like a gain (31 v 28) and were luck. No engine over
+  Z3's other primitives was built (measured no-go). Whether anything of it
+  goes on by default is the owner's call (bead `d96.9.7`). Solver README,
+  "Numbers stored as sorted bits". The pass's rules are in `CONVENTIONS.md`
+  ("The number pass"): after a change to what a reader takes, every target
+  cell and the 400-cell census come before any timing run; and a new pass
+  with work of its own goes behind the XOR reading and is checked with the
+  same-search run (`log/sorted-bits-2026-11-18/same-search/`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

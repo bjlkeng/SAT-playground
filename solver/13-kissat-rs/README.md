@@ -8781,6 +8781,17 @@ writes such things, a reader that finds them by what they mean, a census, the
 added clauses in the solver, and the runs. Nothing goes on by default without
 the owner's word (bead `d96.9.7`).
 
+**Outcome (2026-11-19).** The reading works and the idea behind it does not
+pay. With the pass's clauses in, a placement sets its label bits by
+propagation on all 20 pyramid cells (2,930 to 3,000 of 3,000 sampled cases,
+359 to 1,362 before). The search is not faster for it: on the 27 cells of
+2025 that the pass changes, run under a work budget on up to eight seeds, it
+solves 127 runs against 132 without it, and a refutation of a pyramid cell
+takes 0.963 of the work; on the 69 files of 2020 to 2024 that it changes it
+solves 76 runs against 76 ("The runs" below). The 15 against 14 above, and a
+31 against 28 that came after it, were two seeds each. The pass stays in the
+solver as an option, off by default, and as the census tool.
+
 ### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
 
 **What it is.** `tools/z3_catalog.py build` makes one toy per primitive and
@@ -9030,12 +9041,12 @@ writes them into the placements, and no variable stands for "the label is
 
 ### The number pass in the solver (2026-11-19; bead `SAT-playground-d96.9.4`; off by default)
 
-**What it does.** `--structnum=1` runs the reader above inside the solver, as
-a pass of the structure stage (`src/structnum.rs`), before the search. It
-adds what the encoding lacks: units and two-literal clauses only, each true
-in every model of the input, each a `rup` line of the stage's VeriPB proof.
-`--structnumticks` (in thousands, 2,000,000 by default) is its work limit.
-Nothing runs with the option off.
+**What it does.** `--structnum=1` runs the reading above inside the solver, as
+a pass of the structure stage (`src/structnum.rs`), before the search. For
+every number under a count it adds the clauses the encoding lacks: units and
+two-literal clauses only, each true in every model of the input, each a `rup`
+line of the stage's VeriPB proof. `--structnumticks` (in thousands, 2,000,000
+by default) is its work limit. Nothing runs with the option off.
 
 **The same example.** The toy of the reader (x in 0..3 as three sorted bits,
 a count with three helpers): the pass writes "h2 -> g2", "g2 -> h2", "not h3
@@ -9044,44 +9055,493 @@ formula. A formula that is refuted with them (the toy with "x = 2" and
 "x >= 3" both forced) passes the gate: VeriPB takes the four lines, drat-trim
 the search's proof on the formula plus the four clauses.
 
+**What the pass takes for a number.** It is stricter than the Python reader
+above, so that it stays cheap and adds nothing on a formula without such
+numbers.
+- *A bit is a true input*: a variable that no gate shape could define. (The
+  reader also takes a variable in a ring of shapes, such as a member of an
+  exactly-one group.)
+- *Only a number under a count gets clauses*: three bits or more, and every
+  step from one value to the next, but one at most, has a variable equal to
+  it. A formula with no such number gets no clause at all. The bit test
+  finds true clauses on any chain of implications, a circuit's too; they are
+  held back and written at the end, in the order found, only when a number
+  under a count was read. (Before this rule the pass wrote such clauses on
+  Kakuro, sudoku, rook and other cells of 2025; now 12 cells of
+  2025 have clauses found and held back, 251 in all.)
+- *Ends that many share are not followed.* A label of the pyramid is six
+  sorted bits. On the cells without the `FPBLE`/`FPBEQ` options hundreds of
+  placements hang on its two ends: "this placement needs the label at 6"
+  implies the top bit, "needs it at 0" implies that the lowest bit is off.
+  Each is a true input, and each pair of them made a chain of its own over
+  the same six bits: 8,425 candidate chains for the 52 labels of
+  `bp4_CSO_IXA_ZR`. Two ends on one member cannot both be its next bit, and
+  among many none stands out. So with more than four ends on one member none
+  is followed, and they come out as readers of the number. (Four, because in
+  the catalog a real end bit shares its neighbour with two other ends at
+  most.) The toy with such ends added, no two of a kind on at once:
+
+  | ends a side | clauses | work with the rule | without it |
+  |---|---|---|---|
+  | 6 | 61 | 2,969 | 31,329 |
+  | 20 | 439 | 14,099 | 688,951 |
+  | 60 | 3,679 | 99,899 | 14,624,631 |
+  | 200 | 40,219 | 1,030,199 | 237,401,251 |
+
+  Both ways the pass adds the toy's four clauses. With the rule its work is
+  about the formula's size; without it, the number of pairs.
+- *The stretch under the count.* On `bp4_CSO_IXA_ZR` five x labels of the
+  bottom layer (the ones the `IXA` option compares: they must never
+  decrease) each have one helper on each end: a variable that only implies
+  "the label is 0", and one for "the label is 6". Something reads each, so
+  the end test keeps both, and the label came back as a chain of eight: nine
+  values, of which the count reads six steps. That is not "under a count",
+  and those five labels got no clauses. A chain that is not under a count as
+  it stands is now cut to the stretch between its lowest and its highest
+  step that some variable equals. A count gives every bit back, so the
+  number's bits are inside that stretch.
+
 **What it leaves out, against the Python reader.** Chains of fewer than
 three members (a formula without gates has thousands: two variables and one
 clause between them); chains past 62 bits; the three-literal `hole` clauses;
 pairs of numbers; the partial readers one by one; and any clause it cannot
-prove in a few steps (the reader lists those as true and unproved; the pass
-adds only what its proof shows). It does not ask propagation for hidden
-links between bits, so the adder setting of the catalog is read as far as
-the two-literal clauses go.
+prove in a few steps. It does not ask propagation for hidden links between
+bits, so the adder setting of the catalog is read as far as the two-literal
+clauses go.
 
 **Held to the reader, clause for clause** (`tools/number_pass_check.py`: the
 reader is asked for exactly what the pass does, and the two lists are
 compared in order).
-- The catalog, as written and renumbered twice with signs flipped: 693
-  readings, 23,606 added clauses (1,062 of them proof steps), no difference;
-  and VeriPB accepts the pass's proof on every one (`catalog --proof`).
-- Three pyramid cells (`log/sorted-bits-2026-11-18/pass-check-bp.txt`):
+- The catalog, as written and renumbered twice with signs flipped: 720
+  readings, 390 where the pass adds clauses, 11,994 clauses, no difference;
+  VeriPB accepts the pass's proof on every one (`catalog --proof`). With the
+  pass's clauses in, 4,251 of the 6,002 bit literals that follow from a test
+  alone are set by propagation (2,003 without them; the wider reader closes
+  more, see above).
+- `tests/structnum.rs` (21 tests) and six unit tests in `src/structnum.rs`:
+  the toy's four clauses in the reader's order; refuted toys through the
+  gate, and a changed proof step and a changed derived clause both rejected;
+  a dead value becomes a clause; off by default, with no trace; many ends on
+  one bit; a helper on each end; nothing added where no number is under a
+  count; the work limit holds in the formula's units, inside one long
+  clause, inside one literal's list of 100,000 two-literal clauses and in
+  the look for gates; a piece of work is not paid without room for it, and
+  no table is built without work for it; under forty limits from nothing to
+  its whole cost, a number with 3,000 readers is paid for at every step;
+  whatever the limit, a run that says `read` has read everything; the two
+  early endings below; the XOR reading is the same with the pass on; a
+  chain of 64 bits is left alone.
 
-| cell | clauses the pass adds | the reader | work of the pass | the solver's work in a run of that cell |
+**On the 20 pyramid cells** (`tools/number_pass_check.py pyramid FILE N`
+compares with the puzzle's own reader, which knows the variable names; build
+`solver/13-j41-numpass-snapshot`, commit `54b0d40`):
+
+| cell | labels the puzzle's reader finds (with two or more open bits) | numbers under a count | clauses added | of them not `equal` | a placement sets its label bit: before, with the clauses (of 3,000 sampled) | work of the pass |
+|---|---|---|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | 79 (74) | 77 | 4,707 | 38 `unit`, 20 `dead`, 12 `step` | 623, 2,995 | 120M |
+| `bp4_BC012_AM_FPBEQ_ZR` | 52 (50) | 54 | 3,945 | 81 `unit`, 17 `dead` | 592, 2,994 | 94M |
+| `bp4_BC012_AM_IXA_LPI` | 78 (73) | 80 | 5,111 | 177 `unit`, 4 `dead` | 1,362, 2,965 | 113M |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 52 (50) | 54 | 3,953 | 82 `unit`, 17 `dead`, 6 `step` | 592, 2,994 | 96M |
+| `bp4_BC012_CSO_AM_IXA` | 79 (74) | 77 | 4,647 | 33 `unit`, 19 `dead` | 623, 2,995 | 120M |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 52 (50) | 54 | 3,116 | 43 `unit`, 15 `dead`, 6 `step` | 591, 2,994 | 80M |
+| `bp4_BC012_CSO_IXA_LP` | 78 (73) | 155 | 10,398 | 147 `unit`, 21 `dead` | 602, 2,992 | 173M |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 78 (73) | 155 | 10,454 | 158 `unit`, 21 `dead`, 12 `step` | 602, 2,992 | 182M |
+| `bp4_BC012_IXA_LPI_FPBLE` | 78 (73) | 80 | 3,878 | 175 `unit`, 12 `step`, 1 `dead` | 1,362, 2,965 | 78M |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 37 (37) | 142 | 7,301 | 199 `unit`, 15 `dead` | 532, 2,969 | 106M |
+| `bp4_CB_LP_FPBLE` | 37 (37) | 147 | 6,875 | 199 `unit`, 15 `dead` | 527, 2,969 | 88M |
+| `bp4_CSO_AM_IXA_LP` | 78 (73) | 155 | 11,174 | 180 `unit`, 21 `dead` | 608, 2,993 | 192M |
+| `bp4_CSO_IXA_ZR` | 52 (52) | 57 | 3,165 | 1 `dead` | 568, 3,000 | 103M |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | none (see below) | 72 | 4,769 | 65 `unit`, 27 `dead` | - | 37M |
+| `bp4_IXA_FPBEQ_ZR` | 52 (52) | 57 | 2,517 | 7 `step`, 1 `unit` | 567, 3,000 | 91M |
+| `bp4_LPI_FPBEQ_ZR` | 51 (51) | 63 | 3,031 | 7 `unit`, 1 `dead` | 517, 2,930 | 68M |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 52 (52) | 88 | 6,436 | 139 `unit`, 22 `dead` | 569, 3,000 | 157M |
+| `bp4_TCO_CSO_ZR` | 52 (52) | 57 | 3,242 | 77 `unit`, 1 `dead` | 525, 3,000 | 82M |
+| `bp4_TCO_IXA_FPBLE_ZR` | 52 (52) | 57 | 2,595 | 78 `unit`, 7 `step` | 568, 3,000 | 92M |
+| `bp5_CSO` | 129 (129) | 131 | 12,685 | - | 359, 3,000 | 632M |
+
+On every one of the 20 the pass adds exactly the clauses the Python reader
+lists, in the same order, and VeriPB accepts its proof (`number_pass_check.py
+files --proof`; the same holds on the seven other cells of 2025 where the
+pass writes clauses; `log/sorted-bits-2026-11-18/pass-check/`). In all:
+1,812 numbers under a count and 113,999 clauses, for 2.70G of work.
+
+How to read the placement column. A placement needs three labels at given
+values, and the puzzle's reader lists the label bits that follow from each
+placement. Of 3,000 such steps sampled a cell, propagation sets 359 to 1,362
+as the formula stands and 2,930 to 3,000 with the pass's clauses (all 3,000
+on six cells). What is still missing are labels that an option has cut down
+to fewer than three open bits: the pass reads no chain that short. Two
+cells have more numbers under a count than labels (`bp4_BC012_CSO_IXA_LP`:
+155 against 78): the model has other integers, and the pass links them too.
+On `bp4_CSO_LP_FPBLE_ZR_YS` the puzzle's reader finds no label (it locates a
+label's bits through the tests "this label is 0", and with the `YS` option
+only seven of those are in the formula); the pass reads 72 numbers there all
+the same.
+
+**What it costs where it finds nothing.** Two measures. The first is the
+pass alone on every cell of the 2025 suite, with the other structure passes
+off and the stage's clause limit raised from 10M to 60M so that large files
+are read too (`tools/number_read.py census ... --solver`, table
+`benchmarks/rl/numbers_2025.tsv`). The second, at the end, is what the pass
+costs with the shipped limits.
+
+| what the pass says | cells | its work |
+|---|---|---|
+| `read`, clauses written (the 20 pyramid cells and seven others) | 27 | 3.4G |
+| `read`, nothing written | 294 | 18.8G |
+| `dense`: too many paths, nothing read | 42 | 5.2G |
+| `partial`: the tests ran out of their allowance | 18 | 6.8G |
+| the formula's own units refute it | 11 | 0.2G |
+| not run: more than 60M clauses (7), out of 16 GB with or without the pass (1) | 8 | - |
+| all | 400 | 34.4G |
+
+A cell costs 6.5M in the middle, nine in ten cost under 313M, and the
+dearest 1,123M; no cell reaches the pass's 2G limit. The 34.4G are 0.45% of
+the tick PAR-2 sum of the last paired 400-cell run (7,633G, seed 0,
+2026-11-16), a little more than the count engine's read (29.4G). By part:
+6.7G loading the formula and setting its units, 18.6G the look for gates
+and equal variables, 2.7G the links, 2.5G the search for paths, 3.8G the
+tests. So most of the cost is three walks over formulas in which nothing is
+found, and a walk is charged a unit a literal. In seconds that is less than
+it looks: on two large cells where nothing is found the pass took 24 s for
+1,165M and 7 s for 674M, 49M to 96M units a second, while the search runs at
+about 33M a second.
+
+On 12 cells the tests found 251 clauses and held them back, because no
+number there is under a count. On three more a number under a count was
+read and nothing was missing (`spg_300_300`, two `GP` cells).
+
+*With the shipped limits* the pass costs about a third of that: it runs on
+296 of the 400 cells (on the others an earlier pass has refuted the formula
+already, or the formula has more than the stage's 10M clauses), and its
+work is 10.9G in all, 0.14% of that tick PAR-2 sum. In seconds: over 395
+cells run with and without the pass to the same conflict limit, the runs
+with it took 326 s more in all ("The runs" below, run 4).
+
+Three allowances keep it there, each counted in work, so a run gives the
+same result on a loaded host:
+- *Too many paths* (`status=dense`): the search for chains may cost three
+  times the work of making the links it walks, plus 1M. On the pyramid cells
+  it costs under 0.7 times. Past the allowance nothing is read.
+- *Tests that find no number under a count* (`status=partial`): the tests of
+  the candidates may cost 50M before the first number under a count, and
+  20M more for each one found on bits that no number before it holds. The
+  pyramid cells need 0.4M to 4M a number. Past the allowance the candidates
+  left are not tested, and what was read is linked.
+- *The pass's limit* (`status=stopped`): `structnumticks`.
+
+**What went wrong on the way** (kept so that it is not repeated). The pass
+first read as widely as the Python reader. On circuits that was too eager,
+so it was tightened to true inputs and numbers under a count, and rechecked
+on two pyramid cells. Both were of the kind that still read. A 160-run
+timing of the 20 cells was started on that build (`timing/run3`); on 8 of
+the 20 the pass stopped at its 2G limit with nothing read, and the same
+search ran 2G of work later. The run was thrown away at 50 results. After a
+change to what a reader takes, every target cell and the 400-cell census
+come first, the timing after.
+
+**Limits kept** (`CONVENTIONS.md`, structure passes). All work is paid into
+one clock, which writes the solver's work clock and looks at the limit and
+the stop flag every 4,096 units, inside propagation and inside one long
+clause too. The pass starts only with room for its tables and two walks of
+the formula. A sort or a table is paid in one piece and not started without
+room for it, and without room the pass ends as `stopped`, never as `read`.
+Nothing is paid inside a loop over a hash table, so the work is the same
+from run to run.
+
+### Census: which cells carry numbers under a count (2026-11-19; bead `SAT-playground-d96.9.3`)
+
+**What it does.** The solver's own number pass is run alone, with no search,
+on every cell of the 2025 suite and on every file of the main tracks of 2020
+to 2024 (`tools/number_read.py census DIR --solver BIN`), and its report
+line is kept, a row a file: `benchmarks/rl/numbers_2025.tsv` and
+`benchmarks/rl/numbers_prior.tsv`. `tools/number_read.py report` sums the
+rows by family. The 2026 suite is not read. The first census was by the
+Python reader; it takes minutes a cell and ran out of memory on the largest,
+so the pass itself does it, in seconds a cell. Build: the reviewed one,
+`solver/13-j41-numpass-snapshot` (commit `54b0d40`).
+
+**A row, as an example.** `bp4_CSO_IXA_ZR`: `status=read`, 57 numbers under
+a count (47 with seven values, 8 with eight, 2 with nine), 3,165 clauses
+written (3,164 `equal`, 1 `dead`), work 103M. The puzzle's own reader finds
+52 labels with seven values there; the other five numbers are integers of
+the model that are no labels.
+
+**What it finds.**
+
+| | 2025 | 2020 to 2024 |
+|---|---|---|
+| files | 400 | 1,780 |
+| read by the pass | 392 | 1,750 |
+| with a number under a count | 30 | 85 |
+| where the pass writes clauses | 27 (114,531 clauses) | 69 (18,663 clauses) |
+| where clauses were found and held back (no number under a count) | 12 (251) | 111 (15,039) |
+| ended early as `dense` (too many paths, nothing read) | 42 | 178 |
+| ended early as `partial` (tests out of their allowance) | 18 | 110 |
+| `stopped` at the pass's 2G limit | 0 | 2 |
+| not read: more than 60M clauses | 7 | 29 |
+| not read: other | 1 | 1 |
+| the pass's work, all files | 34.4G | 151.1G |
+| the pass's work, a file in the middle | 6.5M | 6.0M |
+
+By family, both sets together (the families where the pass writes 30
+clauses or more are listed one by one):
+
+| family | author | files | with a number under a count | such numbers | their values (values x how many) | clauses the pass writes | example |
+|---|---|---|---|---|---|---|---|
+| bp | - | 20 | 20 | 1,812 | 4x7 5x44 6x40 7x1489 8x85 9x121 10x21 11x5 | 113,999 | `bp4_CSO_AM_IXA_LP.normalised` |
+| scheduling | stojadinovic | 6 | 1 | 3,227 | 4x3227 | 10,751 | `atco_enc1_opt1_10_15` |
+| hardware-model-checking | xindi | 4 | 4 | 490 | 4x490 | 3,150 | `bmc_QICE_req_sfl_30` |
+| edge-matching | holten | 11 | 5 | 87 | 4x37 6x23 10x24 24x3 | 2,076 | `b2005-p2-14x14c17h9-Ser4-0` |
+| discrete-logarithm | jingchao | 6 | 6 | 144 | 4x73 5x37 6x31 7x3 | 1,033 | `dislog_a12_x12_n22` |
+| planning | rintanen | 5 | 2 | 2 | 4x1 20x1 | 969 | `grid-strips-grid-y-3.045-NOTKNOWN` |
+| hwmcc-iter | - | 4 | 3 | 5,610 | 4x4655 5x754 6x65 7x125 8x2 9x3 10x6 | 251 | `6s268r_Iter94` |
+| hardware-model-checking | huawei | 11 | 6 | 1,526 | 4x1233 5x285 6x2 7x2 12x2 13x2 | 240 | `6s186_Iter20` |
+| singletons | jingchao | 1 | 1 | 13 | 7x13 | 181 | `dislog_a14_x14_n24` |
+| edge-matching | unknown | 10 | 4 | 10 | 4x10 | 116 | `b2005-p4-14x14c17h9-Ser5-0` |
+| planning | - | 2 | 1 | 12 | 4x9 5x3 | 86 | `aaai10-planning-ipc5-pathways-17-step20` |
+| independent-set-reconfiguration | froleyks | 13 | 1 | 4 | 4x3 5x1 | 59 | `reconf20_116_le450_25c_1` |
+| cryptography | gocht | 2 | 2 | 3 | 4x3 | 43 | `sha256__zeroOut_12__freeIn_16__seed_1` |
+| planning | balyo | 12 | 4 | 4 | 7x4 | 36 | `sokoban-p20.sas.cr.27` |
+| planning | maris | 2 | 2 | 3 | 4x1 5x2 | 36 | `rovers1_ks99i.renamed-as.sat05-3971` |
+| software-verification | aws | 20 | 6 | 15 | 4x15 | 34 | `aws-encryption-sdk-c:aws_cryptosdk_hdr_w` |
+| planning | surynek | 5 | 3 | 6 | 4x6 | 30 | `mrpp_8x8#24_14` |
+| 11 more families with 2 to 29 clauses each | | | 28 | 108 | nearly all 4x | 104 | |
+| 6 families where nothing is missing (cellular-automata, gp, graceful-production, parity-games, profitable-robust-production, spg) | | | 16 | 123 | up to 63 values | 0 | |
+
+**How to read it.**
+- *The pyramid family is the one this was built for, and it is where the
+  clauses are*: 113,999 of the 133,194 clauses the pass writes over all
+  2,142 files it reads (86%), on 20 of the 115 files with a number under a
+  count. No Bel's Pyramid cell is in the tracks of 2020 to 2024.
+- *Elsewhere most numbers are small.* The `4x` entries are chains of three
+  bits with a variable equal to each step, in circuits, bounded model
+  checking and planning. They are numbers under a count by the pass's rule,
+  and the clauses are true, but nothing says an integer of a model stands
+  behind them. One scheduling cell (`atco_enc1_opt1_10_15`) has 3,227 of
+  them and gets 10,751 clauses.
+- *Larger numbers outside the pyramid*: the edge-matching puzzles (24
+  numbers of ten values and 3 of 24 values), the discrete-logarithm cells
+  (up to seven values), one planning cell with a number of 20 values (its
+  909 clauses are all units: variables that every value of the number sets
+  the same way), and six families whose numbers have up to 63 values and
+  lack nothing: there the encoding says both directions already.
+
+**Caveats.**
+- "Under a count" is the pass's rule (three bits or more, every step but
+  one at most has a variable equal to it), not a proof that Z3 or any count
+  wrote the number.
+- A file that ended as `dense` or `partial` was not read to the end (60 of
+  the 392 cells of 2025, 288 of the 1,750 prior files); a number there can
+  be missed.
+- Two prior files (`SAT_MS_sat_snake_p01.pddl_39`,
+  `UNSAT_MS_opt_snake_p20.pddl_29`) reach the pass's 2G limit while the links
+  between free variables are thinned out (1.8G). A limit on that step was
+  looked at and left out: by the same measure it would cut the planning cell
+  with the 909 units.
+- The two files "not read: other": `17.normalised` of 2025 (117M variables)
+  runs out of 16 GB with or without the pass, and on
+  `baseballcover12with23_and2positions` of 2020 the run is still busy after
+  the census's 900 s. Run by hand with the pass held to 20M and then to
+  200M of work, it is still busy after 300 s both times: the time is the
+  solver's own start, not the pass.
+
+**Tools.** `tools/number_read.py census ... --solver BIN [--solver-args]`,
+`tools/number_read.py report TABLE...`; the run script and logs are in
+`log/sorted-bits-2026-11-18/census7/`.
+
+### Engines over the primitives: measured, none built (2026-11-19; bead `SAT-playground-d96.9.5`)
+
+The epic's third step asked whether to build reasoning engines for three
+things Z3 writes: bounds over sums of sorted-bit numbers, weighted sums, and
+alldifferent over binary-coded values. Each was to be measured first, with a
+go or a no-go a primitive. All three are no-go.
+
+- *Bounds between two numbers that a constraint ties* (the reader's `pair`
+  step: every joint value of two numbers that share a reader is tried, and
+  what the refuted ones say about the bounds becomes two-literal clauses).
+  On the 14 pyramid cells where the step ran to its end it adds 10 to 692
+  clauses on top of 2,536 to 6,357 links, and with the pass's clauses alone
+  a placement already sets its label bit in 2,930 to 3,000 of 3,000 cases.
+  The catalog says why: Z3 writes a sum of sorted-bit numbers as a count
+  over all their bits, and its counts over plain bits propagate in full in
+  the base setting. There is little left for an engine to add.
+- *Weighted sums by bit-vector adders* (`pb.bv` in the catalog). The reader
+  reads none of the three toys of that setting in full, and the census does
+  not look for it; the pyramid cells were written with totalizers.
+- *Alldifferent over binary-coded values.* Binary-coded choices are common
+  (97 of the 392 cells read in 2025 have one with three value tests or
+  more, 229 of the 1,750 prior files), but a value test there is an AND
+  gate, which propagates both ways already, and the files with the most of
+  them are bounded-model-checking and software-verification files, where
+  such a set of tests is a decoder. No family was found where a constraint
+  over such codes is what the search lacks.
+
+The stronger reason came afterwards, from the runs below: closing the gap
+that this epic set out to close did not make the search faster. An engine
+that closes a smaller gap of the same kind is not worth building on that
+evidence.
+
+### The runs: the added clauses do not make the search faster (2026-11-19; bead `SAT-playground-d96.9.6`)
+
+**The question.** With the pass's clauses in, a placement of the pyramid
+sets its label bits by propagation, in 2,930 to 3,000 of 3,000 sampled cases
+against 359 to 1,362 before. Does the search then solve more, or sooner?
+
+**What was run** (scripts, job tables and outputs in
+`log/sorted-bits-2026-11-18/`; every run is one solver process pinned to a
+core, 16 GB, 28 or 32 at a time; runs 2 to 5 use frozen builds of the pass,
+`solver/13-j40-numpass-snapshot` to `13-j42-numpass-snapshot`, which write
+the same clauses: the later ones have the review's work-accounting fixes
+and, from `13-j42`, the pass after the XOR reading):
+1. *The reader's links written into the file* (`timing/run1`, 2026-11-18):
+   the 20 pyramid cells as they are and with the Python reader's links
+   appended (2,536 to 12,685 clauses a cell), the shipped build, seeds 2 and
+   3, 1,800 s a run. 80 runs.
+2. *The pass in the solver against the same build without it*
+   (`timing/run4`, with 16 runs redone in `timing/run4b`, see "A side
+   effect" below; together `timing/run4final`): the 27 cells of 2025 where
+   the pass writes clauses, with a work limit of 60G a run (what 1,800 s
+   gives on a pyramid cell), so the outcome does not depend on the host's
+   load. Seeds 2 to 9 on the ten pyramid cells that have a model and on the
+   seven other cells, seeds 2 to 5 on the ten refuted pyramid cells. 352
+   runs.
+3. *The pass with the solver's own simplifications switched off*
+   (`timing/run6`): three refuted pyramid cells, seeds 2 to 5, 30G a run.
+   48 runs.
+4. *The other cells of 2025* (`same-search/`): all 400 cells with and
+   without the pass, each run ended by the same limit of 100,000 conflicts.
+5. *The prior years* (`timing/run5`): every file of 2020 to 2024 where the
+   pass writes clauses, seeds 2 and 3, 20G a run.
+
+**How to read a row.** `bp4_BC012_AM_FPBEQ_ZR`, eight seeds, 60G each:
+without the pass one run finds a model, with it three do. Work PAR-2 counts
+a solved run at its work and an unsolved one at twice the limit: 879G
+against 676G, so 0.77x. On `bp4_TCO_IXA_FPBLE_ZR` it is the other way: six
+runs find a model without the pass and three with it, 1.51x.
+
+**The pass against the same build without it** (run 2; `timing/summ4.py
+run4final --jobs jobs4.tsv --check`):
+
+| cells | seeds a cell | solved without the pass | with it | work PAR-2 with / without |
 |---|---|---|---|---|
-| `bp4_CSO_IXA_ZR` | 3,164 (all `equal`) | the same | 114M | 3.8G to 54.7G |
-| `bp4_AM_IXA_FPBLE` | 4,754 (4,647 `equal`, 60 `unit`, 30 `dead`, 5 `bound`, 12 proof steps) | the same | 101M | 24.1G to 37.0G |
-| `bp5_CSO` | 12,685 (all `equal`) | the same | 610M | 6.1G to 18.5G |
+| the ten refuted pyramid cells | 4 | 40 of 40 | 40 of 40 | 0.963 |
+| the ten pyramid cells with a model | 8 | 46 of 80 | 44 of 80 | 1.033 |
+| `6s268r_Iter94` (refuted) | 8 | 8 | 8 | 0.630 |
+| `6s299b685_Iter30` (model) | 8 | 8 | 8 | 1.272 |
+| `aaai10-planning-ipc5-pathways-17-step20` (refuted) | 8 | 8 | 8 | 1.066 |
+| `dislog_a14_x14_n24` (model) | 8 | 6 | 3 | 1.366 |
+| `intel047_Iter78` (model), `s38584` (refuted) | 8 | 16 | 16 | 1.013, 1.020 |
+| `test_v7_r12_vr10_c1_s18160` (no answer) | 8 | 0 | 0 | 1.000 |
+| all 27 cells | | 132 of 176 | 127 of 176 | 1.047 |
 
-  Putting the two side by side found a fault in the reader, not in the pass:
-  a bit that an earlier clause of the same reading had fixed stayed in the
-  chain (fixed in the reader).
-- `tests/structnum.rs` (6 tests): the toy's four clauses in the reader's
-  order; two refuted toys through the gate, and a changed proof step and a
-  changed derived clause both rejected; a dead value becomes a clause; off by
-  default, with no trace; pigeons unchanged counter for counter, the pass's
-  own work aside; the work limit holds inside the widest loop (a hundred
-  copies of a 100-literal clause: 100,000 against 2.06M unlimited); a chain
-  of 64 bits is left alone.
+- *Where the cells have a model: no gain.* 46 runs solved against 44. The
+  pass solves more runs on three of the ten cells, fewer on four, the same
+  on three.
+- *On refutations: a few percent.* Over the 40 pairs of runs the pass needs
+  0.963 of the work and 0.949 of the conflicts. One run is anywhere from
+  0.71 to 2.43 of its partner, so this is a small effect seen through wide
+  noise.
+- *On the seven other cells: nothing to keep.* One is clearly faster. One
+  is slower by the pass's own work (0.5G on a cell that is solved in 2G).
+  The discrete-logarithm cell finds a model on three seeds of eight against
+  six.
+- *In all*: 127 solved runs against 132, work PAR-2 1.047. The pass does
+  not pay for itself on the cells it was built for.
 
-**Limits kept** (`CONVENTIONS.md`, structure passes): the pass starts only
-with room to build its propagator, polls its limit and the stop flag inside
-every loop, and writes its work to the clock at every poll, so a run that a
-signal ends in the middle reports it.
+**The earlier, smaller runs looked better, and that was the seeds.** The
+links added by hand on 2026-11-13 gave 15 solved runs against 14 of 18. Run
+1, the reader's links in the file, gave 31 against 28 of 40, and on the 20
+refuted runs 0.867 of the conflicts (77.7M to 67.3M). Run 2 has the same
+cells and seeds in it, and its runs without the pass are run 1's, conflict
+for conflict, on 20 of 20. Split by seed, the pass's refutations take 0.896
+of the conflicts on seeds 2 and 3, and 1.010 on seeds 4 and 5. Two seeds
+were not enough to tell 0.87 from 1.0 on these cells; eight on the cells
+with a model and four on the refuted ones are.
+
+**Why does a complete propagation not help? One explanation tested, and
+not borne out.** After 200,000 conflicts on `bp4_CSO_IXA_ZR` the solver has
+substituted 24,380 variables and eliminated 17,634 by itself, and with the
+pass on those numbers are 24,451 and 17,347. So perhaps the solver's own
+elimination takes the count's helper variables out and the missing clauses
+with them. If so, the pass should help a solver that does not eliminate.
+Run 3:
+
+| the solver's own simplifications | solved without the pass | with it | work PAR-2 with / without |
+|---|---|---|---|
+| all on (the same cells and seeds in run 2) | 12 of 12 | 12 of 12 | 1.005 |
+| variable elimination off | 12 | 12 | 0.909 |
+| elimination, probing, substitution, sweeping and vivification off | 11 | 9 | 1.306 |
+
+It does not: 0.91 with elimination off is inside the spread of single runs
+(0.44 to 1.43 there), and with everything off the pass is behind. What the
+runs do say is plainer: having these propagations from the start changes
+little. My reading, which no run here tests, is that the search learns what
+a placement implies about its labels as clauses, when it needs it.
+
+**A side effect, found by run 4 and fixed.** Run 4 is the check that the
+pass leaves the search alone where it writes no clause. Each cell is run
+with and without the pass to the same limit of 100,000 conflicts, and the
+two `c workclock` lines are compared (`same-search/compare.py`): every field
+must be equal but two, `ticks` and `work`, which must be higher by exactly
+the pass's own work.
+
+| the pass's place in the structure stage | the same search, field for field | the pass writes clauses (not compared) | cut by the 1,200 s wall limit (not compared) | differ |
+|---|---|---|---|---|
+| before the reading of XOR constraints (build `13-j41`; 7 cells not run) | 362 | 27 | 2 | 2 |
+| after it (build `13-j42`, commit `e68a7d0`) | 368 | 27 | 5 | 0 |
+
+The two that differed showed a fault in where the pass ran. The XOR reading
+(the parity engine's input) stops at the stage's base limit, which is a tick
+count to stop at and not an allowance of its own. The pass ran just before
+it, and where the pass's work took the clock past that limit the XOR reading
+got nothing: on `goldcrest-and-11` the run without the pass reads 939 XOR
+constraints and the run with it none. In run 2 the same had happened to the
+pass arm of two cells, `bp5_CSO` (120,285 XOR constraints without the pass,
+none with it) and `6s299b685_Iter30` (630,638 and none); the other 25 cells
+read the same constraints in both arms. The pass now runs after the XOR
+reading. Those 16 runs were done again with it (`timing/run4b`, with four
+runs of other cells that came out conflict for conflict as before), and the
+table above has the new numbers: `bp5_CSO` 1.066 (it was 1.064) and
+`6s299b685_Iter30` 1.272 (1.240). So the lost constraints were not what
+made those two rows.
+
+With the shipped limits the pass runs on 296 of the 400 cells (on the others
+an earlier pass has refuted the formula, or the formula is past the
+structure stage's 10M clauses) and its work is 10.9G in all, 0.14% of the
+tick PAR-2 sum of the last paired run (7,633G). Over the 395 cells that both
+arms finished, the runs with the pass took 326 s more in all, against a wall
+PAR-2 sum of 298K s for that paired run.
+
+**The prior years** (run 5; `timing/summ5.py run5 --jobs jobs5.tsv
+--check`). The 69 files of 2020 to 2024 where the pass writes clauses, seeds
+2 and 3, 20G of work a run (a third of run 2's limit, to keep 276 runs to
+two hours): 76 runs solved of 138 without the pass and 76 with it, work
+PAR-2 0.995, and over the 74 runs that both answer the pass needs 0.981 of
+the work. Four runs are answered by one arm only, two each way. No family
+stands out by more than two seeds can carry: the one scheduling file with
+3,227 small numbers is faster on both seeds (13.3G to 9.4G in all), three
+path-finding files need 0.70 of the work (2.2G to 1.5G), the
+discrete-logarithm files 1.20 on the runs both answer, and the families
+with one to ten clauses a file are unchanged to three digits. 51 models
+checked, none fails; no file got both answers.
+
+**Checks.** Every model of run 2 was checked against its input (131 models,
+none fails). No cell got both answers in any run, and no run ended without
+an answer before its work limit. The pass's proof was checked apart from
+these runs: on all 27 cells VeriPB accepts it, and the clauses are the
+Python reader's, in order (`pass-check/files.txt`). Four refutations with
+the pass on went through the whole gate, VeriPB for the stage's steps and
+drat-trim for the search on the formula plus the pass's clauses
+(`pass-check/gate.txt`): `s38584`, `6s268r_Iter94`,
+`aaai10-planning-ipc5-pathways-17-step20` and the pyramid cell
+`bp4_CB_LP_FPBLE` (6,875 clauses from the pass; 132 s to solve, 944 s to
+check). The other refutations of these runs were not written out as proofs.
+
+**What it means.** The pass is sound, cheap enough and does what it was
+built to do, and the thing it does is not what these cells lack. It stays
+in the solver as an option (`--structnum=1`, off) and as the census tool.
+The owner's decision is bead `d96.9.7`.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

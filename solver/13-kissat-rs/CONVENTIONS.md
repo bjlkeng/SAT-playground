@@ -232,6 +232,28 @@ Rules the symmetry pass's later steps added (2026-10-11/12):
   propagation does. Root literals mark their networks in `card::flushing`, before they
   leave the trail. A run with a proof file has the engine only while the stream is
   alive. The proof budget is decided the same with a proof file or without one.
+- **The number pass (`src/structnum.rs`).** One `Clock` holds all its work. It
+  writes the solver's work clock and looks at the limit, the stop flag and the
+  running part's allowance every 4,096 units. `pay` comes before the work it
+  pays; a charge of 4,096 or more is one piece and is refused without room for
+  it, and a refusal ends the pass as `stopped`, never as `read` with a step left
+  out. The pass's own propagator pays into the same clock a literal, a
+  two-literal clause and a look inside a long clause at a time, and keeps its
+  position, so a cut literal is done again when the work goes on. Tables a
+  variable are paid before they are allocated. Nothing is paid inside a loop
+  over a hash table. Clauses are kept in the order found and written at the
+  end, and only when a number under a count was read. `tools/number_read.py` is
+  the pass's mirror: a change to what the pass reads goes into both, and
+  `tools/number_pass_check.py catalog --proof` must show no difference. After
+  such a change the 20 pyramid cells (`number_pass_check.py pyramid`) and the
+  census of the 400 cells (`number_read.py census --solver`) come first, any
+  timing after: a rule that looked right on two cells lost eight (2026-11-19).
+  In the stage the pass comes after everything that stops at the base limit
+  (the XOR reading is the last such): in front of it, its work used that limit
+  up and two cells lost every XOR constraint. A new pass with work of its own
+  goes behind the XOR reading for the same reason, and is checked with the
+  same-search run (`log/sorted-bits-2026-11-18/same-search/`: all 400 cells
+  with and without it under a conflict limit, the work-clock lines compared).
 - **A guess is allowed only where a verification follows it** (the
   pairing of entries refinement cannot tell apart, the rows a second
   anchor sorts). A guessed matrix that fails is retried once with the
