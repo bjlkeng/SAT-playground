@@ -1209,7 +1209,7 @@ SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "
 def solver_row(job):
     """One file through the solver's number pass (--structnum=1, the search
     stopped at once): the pass's report line as a row."""
-    path, solver, seconds, mem_mb = job
+    path, solver, seconds, mem_mb, extra = job
     import resource
     import subprocess
     stem = _stem(path)
@@ -1222,7 +1222,7 @@ def solver_row(job):
 
     t0 = time.time()
     try:
-        p = subprocess.run([str(solver), "-n", *STOCK, "--structnum=1", "--conflicts=0", str(path)],
+        p = subprocess.run([str(solver), "-n", *STOCK, "--structnum=1", "--conflicts=0", *extra, str(path)],
                            capture_output=True, text=True, timeout=seconds, preexec_fn=limit)
     except subprocess.TimeoutExpired:
         return {"stem": stem, "seconds": f"{time.time() - t0:.1f}", "error": "time"}
@@ -1277,7 +1277,7 @@ def cmd_census(a):
             w.writeheader()
             fh.flush()
         if a.solver:
-            jobs = [(str(f), a.solver, a.seconds, a.mem_mb) for f in todo]
+            jobs = [(str(f), a.solver, a.seconds, a.mem_mb, a.solver_args.split()) for f in todo]
             worker = solver_row
         else:
             jobs = [(str(f), a.budget, a.seconds, a.mem_mb, a.max_clauses) for f in todo]
@@ -1724,15 +1724,16 @@ def selftest(a):
         fake.write_text("#!/bin/sh\necho 'c numbers status=read numbers=2 values=4x1,7x1 counted=1 added=5 equal=4 work=77'\n")
         fake.chmod(0o755)
         st = Path(d) / "solver.tsv"
-        sargs = argparse.Namespace(files=[str(ex)], out=str(st), workers=1, budget=0, seconds=60, mem_mb=0, max_clauses=0, solver=str(fake))
+        sargs = argparse.Namespace(files=[str(ex)], out=str(st), workers=1, budget=0, seconds=60, mem_mb=0, max_clauses=0,
+                                   solver=str(fake), solver_args="--structclauses=5")
         with contextlib.redirect_stdout(io.StringIO()):
             cmd_census(sargs)
         with open(st, newline="") as fh:
             srows = list(csv.DictReader(fh, delimiter="\t"))
         assert len(srows) == 1 and srows[0]["counted"] == "1" and srows[0]["values"] == "4x1,7x1" and srows[0]["work"] == "77", srows
         fake.write_text("#!/bin/sh\necho 's UNKNOWN'\n")
-        assert "no report line" in solver_row((str(ex), str(fake), 60, 0))["error"]
-        assert solver_row((str(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf"), str(fake), 60, 0))["error"] == "holdout"
+        assert "no report line" in solver_row((str(ex), str(fake), 60, 0, []))["error"]
+        assert solver_row((str(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf"), str(fake), 60, 0, []))["error"] == "holdout"
         sargs.out = str(table)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1850,6 +1851,8 @@ def main(argv=None):
     c.add_argument("--max-clauses", type=int, default=MAX_CLAUSES)
     c.add_argument("--solver", default="", help="read with the solver's own number pass (this binary) instead of this tool: "
                    "seconds a file, not minutes; the table then has the pass's report fields")
+    c.add_argument("--solver-args", default="", help="more options for that binary, such as --structclauses=60000000 "
+                   "to read files past the structure stage's usual limit of 10M clauses")
     rp = sub.add_parser("report")
     rp.add_argument("tables", nargs="+")
     rp.add_argument("--min-numbers", type=int, default=1, help="list a family when a cell has this many numbers under a count")
