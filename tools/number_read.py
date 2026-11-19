@@ -1005,10 +1005,13 @@ def profile_of(num):
     cuts, tests = set(), set()
     for t, f in num.readers.values():
         k = kind_of(t, f, live)
+        # a variable and its opposite say the same thing: a threshold that is
+        # off from a value upwards marks the same cut point, and a variable
+        # that is off at exactly one value tests that value
         if k in ("ge", "le"):
-            cuts.add(t if k == "ge" else f)     # the set of values where it is on, as a mask: one per cut point
-        elif k == "eq":
-            tests.add(t)
+            cuts.add(t if k == "ge" else f)
+        elif k in ("eq", "ne"):
+            tests.add(t if k == "eq" else f)
     return len(live), len(cuts), len(tests)
 
 
@@ -1150,27 +1153,45 @@ def _census_one(job):
     return row
 
 
+HOLDOUT = ROOT / "benchmarks" / "sat-comp-2026"
+
+
+def is_holdout(path):
+    """The file is in the 2026 suite, by where it really is (a link into the
+    suite counts; a path that merely has 2026 in it, such as a log folder
+    named by its date, does not)."""
+    try:
+        Path(path).resolve().relative_to(HOLDOUT.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def cmd_census(a):
     files = []
     for f in a.files:
         pth = Path(f)
         files += sorted(pth.glob("*.cnf*")) if pth.is_dir() else [pth]
-    if any("2026" in str(f.resolve()) for f in files):
+    if any(is_holdout(f) for f in files):
         sys.exit("the 2026 suite is the holdout: not read (plan section 8)")
     out = Path(a.out)
     done = {}
-    if out.exists():
+    new_file = not out.exists() or out.stat().st_size == 0     # a run stopped before its first row leaves an empty file
+    if not new_file:
         with open(out, newline="") as fh:
-            for r in csv.DictReader(fh, delimiter="\t"):
+            reader = csv.DictReader(fh, delimiter="\t")
+            if reader.fieldnames != COLUMNS:
+                sys.exit(f"{out}: not a table of this census (other columns); give another --out")
+            for r in reader:
                 done[r["stem"]] = r
     todo = [f for f in files if _stem(f) not in done]
     print(f"{len(files)} files, {len(done)} already in {out}, {len(todo)} to read", flush=True)
-    new_file = not out.exists()
     import multiprocessing
     with open(out, "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=COLUMNS, delimiter="\t", lineterminator="\n", restval="")
         if new_file:
             w.writeheader()
+            fh.flush()
         jobs = [(str(f), a.budget, a.seconds, a.mem_mb, a.max_clauses) for f in todo]
         with multiprocessing.get_context("fork").Pool(a.workers, maxtasksperchild=1) as pool:
             for n, row in enumerate(pool.imap_unordered(_census_one, jobs), 1):
@@ -1301,7 +1322,8 @@ def cmd_variant(a):
     if any(not c for c in clauses):
         sys.exit(f"{a.file}: an empty clause; the file is unsatisfiable as written, not read")
     top = max((abs(l) for c in clauses for l in c), default=0)
-    r = Reading(max(n_vars, top), clauses, budget=a.budget, partial="partial" in kinds, pairs="pair" in kinds,
+    pairs = False if "pair" not in kinds else True if a.all_pairs else "counted"
+    r = Reading(max(n_vars, top), clauses, budget=a.budget, partial="partial" in kinds, pairs=pairs,
                 kinds=kinds - {"partial"})
     if r.truncated:
         sys.exit(f"{a.file}: the reading stopped at its budget; no variant written")
@@ -1562,10 +1584,45 @@ def selftest(a):
         f.write_text("c x\np cnf 3 4\n1 -2 0\n0\n2 3\n 0\n-1 0\n")
         assert read_cnf(f) == (3, 4, [[1, -2], [], [2, 3], [-1]], False)
         assert read_cnf(f, max_clauses=2)[3] is True
-    # renumbering keeps the formula: the reading of the example is the same up to names
-    ren, m = renumber(7, cl, 5)
-    r2 = Reading(7, ren, partial=True)
-    assert len(r2.numbers) == 1 and len(r2.links) == 4
+        # the census: a run that was stopped before its first row leaves an
+        # empty table; the next run must still write the header, or `report`
+        # would take the first row for the column names
+        ex = Path(d) / "ex.cnf"
+        ex.write_text("p cnf 7 %d\n" % len(cl) + "".join(" ".join(map(str, c)) + " 0\n" for c in cl))
+        table = Path(d) / "census.tsv"
+        table.write_text("")
+        args = argparse.Namespace(files=[str(ex)], out=str(table), workers=1, budget=DEFAULT_BUDGET, seconds=120, mem_mb=0,
+                                  max_clauses=MAX_CLAUSES)
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_census(args)
+            cmd_census(args)            # a second run adds nothing: the row is there
+        with open(table, newline="") as fh:
+            got_rows = list(csv.DictReader(fh, delimiter="\t"))
+        assert len(got_rows) == 1 and got_rows[0]["stem"] == "ex" and got_rows[0]["numbers"] == "1" and got_rows[0]["links"] == "4", got_rows
+        other = Path(d) / "other.tsv"
+        other.write_text("a\tb\n1\t2\n")
+        args.out = str(other)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cmd_census(args)
+            raise AssertionError("a table with other columns was added to")
+        except SystemExit as e:
+            assert "other columns" in str(e)
+    # renumbering keeps the formula: the reading of the example is the same up
+    # to names, and so is what the census says of the number (three cut
+    # points with a variable equal to them, one value test), whichever sign a
+    # renaming gives the test variable
+    assert profile_of(Reading(7, cl, partial=True).numbers[0]) == (4, 3, 1)
+    for seed in range(1, 9):
+        ren, m = renumber(7, cl, seed)
+        r2 = Reading(7, ren, partial=True)
+        assert len(r2.numbers) == 1 and len(r2.links) == 4 and profile_of(r2.numbers[0]) == (4, 3, 1), (seed, profile_of(r2.numbers[0]))
+    # the holdout is told by where a file is, not by a 2026 in its path
+    assert is_holdout(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf.xz")
+    assert not is_holdout(ROOT / "log" / "sorted-bits-2026-11-18" / "variants" / "x.cnf")
+    assert not is_holdout(ROOT / "benchmarks" / "sat-comp-2025" / "x-2026.cnf")
     # the catalog, plain and renumbered with signs flipped
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import z3_catalog as zc
@@ -1652,6 +1709,8 @@ def main(argv=None):
     v.add_argument("--add", required=True)
     v.add_argument("--out", required=True)
     v.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
+    v.add_argument("--all-pairs", action="store_true",
+                   help="with pair: try every two numbers that share a reader, not only numbers under a count")
     s = sub.add_parser("selftest")
     s.add_argument("--catalog", default=str(ROOT / "benchmarks" / "rl" / "z3_catalog.jsonl.xz"))
     s.add_argument("--jobs", type=int, default=8)
