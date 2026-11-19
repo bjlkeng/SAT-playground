@@ -683,7 +683,10 @@ SHAPE_COLUMNS = ["name", "primitive", "options", "z3", "vars", "clauses", "input
 PAIR_LIMIT = 44     # input literals: past this the two-literal level is left out
 
 
-def shape(rec):
+def shape(rec, only=None):
+    """The shape row of a record.  `only`, a set of literals, limits the
+    literals that are counted as having to follow (the situations stay the
+    same)."""
     p = Prop(rec["n_vars"], rec["clauses"])
     hard = rec.get("hard")
     J = [(i, frozenset(l)) for i, l in joint(rec)]
@@ -702,6 +705,8 @@ def shape(rec):
     def tally(key, assume, need):
         """`need` must follow from `assume`: count what propagation sets, and
         which of the rest is refuted by propagation when its opposite is added."""
+        if only is not None:
+            need = need & only
         if not need:
             return
         got = p.implied(assume)

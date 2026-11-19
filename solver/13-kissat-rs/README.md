@@ -8887,6 +8887,148 @@ encoding loses, not how much that costs a search.
 with the reader); `python3 tools/z3_catalog.py selftest` and
 `python3 tools/cnf_prop.py selftest`.
 
+### The reader by meaning (2026-11-19; bead `SAT-playground-d96.9.2`)
+
+**What it does.** `tools/number_read.py` reads a formula and finds the
+numbers stored as sorted bits, the variables that read them, and the clauses
+that are true and that propagation does not have. It matches no clause
+shapes. It asks propagation itself, because the catalog showed that from the
+bits to the tests nothing is ever missing: set a number to each of its
+values in turn, and whatever gets set is a function of that number.
+
+**A worked example.** x in 0..3 as three sorted bits g1, g2, g3 (the clauses
+g2 -> g1 and g3 -> g2), and a test T <-> (x = 2) written as a count, with
+three helpers: h1 = "at least one bit", h2 = "at least two" and h3 = "all
+three" (`selftest` has it by hand).
+
+| step | what happens | what comes out |
+|---|---|---|
+| find the chain | among the variables no gate defines, g3 -> g2 -> g1 is a path of implications | a candidate number with the patterns 000, 100, 110, 111 |
+| set each value, propagate | h1 comes out off, on, on, on; h2 off, off, on, on; h3 off, off, off, on; T off, off, on, off | h1 is "x >= 1", so it equals g1; h2 equals g2; h3 equals g3; T is "x = 2" |
+| say what should follow | each helper and its bit set each other both ways; T on means g2 on and g3 off | six clauses for the helpers, two for T |
+| ask propagation | "g1 -> h1" and "h3 -> g3" are clauses already; "h1 -> g1", "h2 -> g2", "g2 -> h2" and "not h3 -> not g3" are missing; with those four in, T sets g2 and g3 by itself | four clauses to add, each found by propagation when its opposite is assumed |
+
+The last row is the point. **A count over sorted bits only gives the bits
+back**: "at least two of the three are on" is the second bit. The encoding
+writes it as a fresh variable and never says they are equal. Once the reader
+says so (two two-literal clauses a helper), everything built on the helpers,
+the value tests and the placements, propagates through clauses that are
+there already.
+
+**How it finds the bits.** No name and no numbering is used.
+- *Gates by shape, only to thin the field*: v <-> OR or AND of others (any
+  width) and the XOR of two others. A shape can be read more than one way
+  (an XOR has no direction; next to a chain the clauses of s = b0 and not b1
+  also say b1 = b0 and not s), so the gates are settled forward from the
+  variables that no shape could define, and what stays unsettled is left
+  free.
+- *Chains*: paths of two-literal clauses between free variables (in a small
+  formula propagation is asked too, since a link can hide behind a helper).
+- *Three tests by propagation* decide what is a bit. The bit test: set a
+  chain's lower members on and its higher ones off, around one member; a
+  real bit stays open, a helper is set (and what it is set to is kept as a
+  clause: a value between two bits is dead). The end test: an end member
+  goes when the two patterns that differ in it alone set exactly the same
+  variables, because then nothing reads it (a guard on the end value, or a
+  helper that is free there). Who reads whom: a chain whose members are all
+  set by every pattern of another chain is a function of that number, not a
+  number.
+
+**What it lists.** `equal` (a threshold and its bit, both ways), `bound` (a
+reader to the lowest or highest value it allows), `hole` (a reader that
+rules out a value in the middle, three literals), `dead` (a value no model
+takes), `unit`, and `pair` (two numbers that a constraint ties: every joint
+value is tried, and what the refuted ones say about the bounds becomes
+two-literal clauses). Each listed clause is true in every model. For each
+the reader says whether propagation has it already and whether a proof
+checker takes it as it stands (RUP); when not, it builds the steps (the same
+clause for the values below, one at a time) and checks them.
+
+**Checked on the catalog** (`python3 tools/number_read.py selftest`, 34 s on
+24 cores): every record with a sorted-bit number, as written and renumbered
+twice with signs flipped, 693 readings.
+- *Two rules hold for every reading*: each listed clause is true in every
+  model (brute force), and it is checkable the way the reading says.
+- *In the base setting every record with no constraint of its own reads in
+  full* (the chain is found; with the links added a test alone sets every
+  bit that follows, and so does a test with one more bit of the same
+  number).
+- The state of every reading is held to
+  `benchmarks/rl/number_read_catalog.tsv`, so a change shows.
+
+| option set | read in full, of readings |
+|---|---|
+| the base setting (with every setting that gives the same clauses) | 139 of 153 |
+| `cnf.no_distributivity` | 129 of 132 |
+| `card.ordered` | 104 of 108 |
+| `card.unate` | 88 of 108 |
+| `card.circuit` (counts by adders) | 37 of 108 |
+| `pb.binary_merge`, `cnf.no_common_patterns`, `pb.sorting`, `pb.bv` (the records they change) | 36 of 39, 26 of 30, 9 of 12, 0 of 3 |
+| all | 568 of 693 |
+
+What is not read in full, and why:
+- *The base setting's 14* are the six toys with a constraint of their own
+  (x <= y, x <= y <= z, x + y = 4, x != y, three numbers all different, x =
+  an if-then-else). There one number is a function of another, a value is
+  dead, or nothing reads an end bit, and the reading takes a shorter or a
+  different but equal chain. Nothing false is listed.
+- *Counts by adders* (`card.circuit`): an adder's sum is an XOR, which pins
+  down its inputs as much as its output, and Z3 writes the chain link
+  between two bits into the adder's own clauses. The reader finds the pieces
+  of a number there and not always the whole. This is not the setting that
+  wrote the pyramid cells.
+- *A weighted sum of two numbers by bit-vector adders* (`pb.bv`): the test
+  is set only when both numbers are; one number alone leaves it open, so the
+  single-number reading misses three links.
+
+**Checked on the pyramid cells** (`tools/number_read.py pyramid FILE N`
+compares with the puzzle's own reader, `tools/pyramid_read.py`, which knows
+the variable names; `log/sorted-bits-2026-11-18/pyramid/`):
+
+| cell | labels the puzzle's reader finds | found here, without names | clauses to add here | placement links of the puzzle's reader | a placement sets its label bit: before, with the links (3,000 sampled) | time (Python, one core) |
+|---|---|---|---|---|---|---|
+| `bp4_CSO_IXA_ZR` | 52 | 52 (47 exactly, 5 with one more member at an end) | 3,164 | 106,932 | 568, 3,000 | 173 s |
+| `bp4_AM_IXA_FPBLE` | 79, of which 74 have two or more bits left open by the options | 74 (68 exactly, 6 with one more) | 4,718 | 147,000 | 623, 3,000 | 127 s |
+| `bp5_CSO` | 129 | 129 (all exactly) | 12,685 | 638,928 | 359, 3,000 | 685 s |
+
+So 60 to 100 two-literal clauses a label do what 1,800 to 5,000 a label
+did. The clauses added on 2026-11-13 went from every placement to its bits (a
+label of a size-4 cell is in about 1,070 placements, each with up to two
+clauses to it); these go from the count's helpers to the bits, once, and the
+placements reach the bits through their own definitions. Whether a search
+likes the short form as much as the long one is for the runs to say
+(`d96.9.4`).
+
+**What the reader also meets in other formulas.** A chain of implications
+between free variables is a "number" to it, whatever wrote it, and on a
+circuit there are hundreds (gate outputs that imply each other). The clauses
+it lists there are true too, but they are ordinary equal-variable facts of
+the kind the solver's own probing finds. So the census counts apart the
+numbers *under a count*: four values or more, and every step from one value
+to the next but one at most has a variable equal to it. That is what a count
+over sorted bits leaves behind. The pyramid's value tests are no mark: Z3
+writes them into the placements, and no variable stands for "the label is
+3".
+
+**Caveats.**
+- Reading by propagation finds what propagation shows. A test that is set
+  only when two numbers are both set is read through the `pair` step when
+  the two share a reader, and missed otherwise.
+- A member more at an end of a chain stays when something reads it (a helper
+  of an ordering constraint on the pyramid). It does not change the links.
+  An end bit that nothing reads is dropped the same way: no reader could
+  tell the two values apart.
+- The partial readers (a placement needs three numbers; there are up to a
+  million pairs a cell) are not linked one by one. 2,000 a formula are
+  tried after the links are in, and the census row says how many clauses
+  they still lack; the placement test above is the direct check.
+- The Python reader takes minutes on a pyramid cell. That is for the census
+  and for file rewrites; in the solver the same steps are a few million
+  propagation steps.
+
+**Tools.** `tools/number_read.py` (`one`, `variant`, `census`, `pyramid`,
+`selftest`), `tools/cnf_prop.py`.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
