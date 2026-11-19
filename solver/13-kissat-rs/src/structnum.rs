@@ -89,8 +89,15 @@ struct Prop {
     start: Vec<u32>,
     root: usize,
     conflict: bool,
-    /// Work: one per literal taken off the trail and per clause looked at.
+    /// Work: one per literal taken off the trail, per clause looked at and
+    /// per literal looked at inside a clause.
     steps: u64,
+    /// `steps` may not pass this: a propagation that would is cut short.
+    limit: u64,
+    /// A propagation was cut short at the limit. What it had set is no
+    /// conflict and not all that follows: nothing may be concluded from
+    /// it, and the reading ends (`Reader::spent`).
+    stopped: bool,
 }
 
 impl Prop {
@@ -106,6 +113,8 @@ impl Prop {
             root: 0,
             conflict: false,
             steps: 0,
+            limit: u64::MAX,
+            stopped: false,
         };
         let mut units: Vec<i32> = Vec::new();
         for i in 0..f.len() {
@@ -174,6 +183,12 @@ impl Prop {
 
     fn propagate(&mut self, mut head: usize) -> bool {
         while head < self.trail.len() {
+            if self.steps > self.limit {
+                // out of work in the middle: not a conflict, and not the whole
+                // propagation either. The caller sees `stopped` and gives up
+                self.stopped = true;
+                return true;
+            }
             let l = self.trail[head];
             head += 1;
             let idx = li(l);
@@ -212,6 +227,7 @@ impl Prop {
                 let mut moved = false;
                 for k in s + 2..e {
                     let m = self.lits[k];
+                    self.steps += 1;
                     if self.value(m) != -1 {
                         self.lits.swap(s + 1, k);
                         self.watch[li(m)].push(ci as u32);
@@ -383,11 +399,11 @@ fn profile_of(num: &Number) -> (usize, usize, usize) {
     (live.len(), cuts.len(), tests.len())
 }
 
-/// The mark of an integer under a count: four values or more, and every
-/// cut point but one at most has a variable equal to it.
+/// The mark of an integer under a count: three bits or more, and every cut
+/// point between its values, but one at most, has a variable equal to it.
 fn is_counted(num: &Number) -> bool {
     let (values, cuts, _tests) = profile_of(num);
-    values >= 4 && cuts + 2 >= values
+    num.n() >= 3 && values >= 2 && cuts + 2 >= values
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +458,7 @@ impl<'a> Reader<'a> {
     /// Out of budget, stopped from outside, or the proof file failed.
     fn spent(&mut self) -> bool {
         *self.ticks = self.base + self.p.steps;
-        if !self.halt && (*self.ticks > self.budget || self.stop.load(Ordering::Relaxed)) {
+        if !self.halt && (self.p.stopped || *self.ticks > self.budget || self.stop.load(Ordering::Relaxed)) {
             self.halt = true;
         }
         if let Some(w) = self.derived.proof.as_ref() {
@@ -474,12 +490,15 @@ impl<'a> Reader<'a> {
                 break;
             }
         }
+        if self.p.stopped {
+            return 2; // nothing is known: not there, not shown
+        }
         if every {
             return 0;
         }
         assumed.clear();
         assumed.extend(clause.iter().map(|&l| -l));
-        if self.p.refutes(&assumed) {
+        if self.p.refutes(&assumed) && !self.p.stopped {
             1
         } else {
             2
@@ -561,7 +580,7 @@ impl<'a> Reader<'a> {
             c.push(lit);
             neg.clear();
             neg.extend(c.iter().map(|&l| -l));
-            if self.spent() || !self.p.refutes(&neg) {
+            if self.spent() || !self.p.refutes(&neg) || self.p.stopped {
                 return false;
             }
             self.put(&c);
@@ -572,7 +591,7 @@ impl<'a> Reader<'a> {
         }
         neg.clear();
         neg.extend(clause.iter().map(|&l| -l));
-        self.p.refutes(&neg)
+        self.p.refutes(&neg) && !self.p.stopped
     }
 
     // -------------------------------------------------------------------
@@ -590,18 +609,13 @@ impl<'a> Reader<'a> {
                 assumed.extend(lits[k + 1..].iter().map(|&l| -l));
                 let mark = self.p.trail.len();
                 let ok = self.p.assume(&assumed);
-                if !ok {
-                    fail.push((k, 0));
-                } else {
-                    match self.p.value(lits[k]) {
-                        1 => fail.push((k, 1)),
-                        -1 => fail.push((k, -1)),
-                        _ => {}
-                    }
-                }
+                let seen = if !ok { Some(0) } else { Some(self.p.value(lits[k])).filter(|&v| v != 0) };
                 self.p.undo(mark);
                 if self.spent() {
-                    return None;
+                    return None; // also when this very propagation was cut short: `seen` is not used
+                }
+                if let Some(how) = seen {
+                    fail.push((k, how));
                 }
             }
             if fail.is_empty() {
@@ -645,7 +659,15 @@ impl<'a> Reader<'a> {
         for v in 0..=num.n() {
             let pat = num.pattern(v);
             let mark = self.p.trail.len();
-            if !self.p.assume(&pat) {
+            let ok = self.p.assume(&pat);
+            if self.p.stopped {
+                // cut short: neither "dead" nor "this is all it sets" can be said
+                self.p.undo(mark);
+                self.spent();
+                num.unread = true;
+                return num;
+            }
+            if !ok {
                 num.dead |= 1 << v;
             } else {
                 for &l in &self.p.trail[mark..] {
@@ -662,7 +684,8 @@ impl<'a> Reader<'a> {
             }
             self.p.undo(mark);
             if self.spent() {
-                break;
+                num.unread = true;
+                return num;
             }
         }
         num
@@ -704,7 +727,9 @@ impl<'a> Reader<'a> {
         let numbers = std::mem::take(&mut self.numbers);
         for (i, num) in numbers.iter().enumerate() {
             let live = num.live();
-            if live.len() < 2 {
+            // only an integer under a count gets clauses: every step between
+            // its values, but one at most, has a variable equal to it
+            if live.len() < 2 || !is_counted(num) {
                 continue;
             }
             let n = num.n();
@@ -784,13 +809,21 @@ impl<'a> Reader<'a> {
 // ---------------------------------------------------------------------------
 
 struct Scan {
+    /// Choices written as a binary code, for the census: (how many, their
+    /// value tests in all, the widest in bits). A choice is a set of free
+    /// variables with three or more value tests, each the AND of all of
+    /// them with their signs.
+    codes: (usize, usize, usize),
     /// literal index -> the literals it implies by one two-literal clause
     /// (after the root units), sorted
     imp: Vec<Vec<i32>>,
     /// per variable: the literal of its class of equal variables that names
     /// the class (the variable itself when it has no equal)
     rep: Vec<i32>,
-    defined: Vec<bool>,
+    /// A shape could define the variable (as a gate's output), whether or
+    /// not the forward settling got to it. A bit of a number is none of
+    /// these: no clause set reads as its definition.
+    shaped: Vec<bool>,
     gates: usize,
     ring: usize,
     work: u64,
@@ -901,6 +934,10 @@ fn scan(f: &Formula, val: &[i8], start: u64, budget: u64, stop: &AtomicBool, clo
     let cls = |l: i32| -> u32 { rep[l.unsigned_abs() as usize].unsigned_abs() };
     // every way a variable could be a gate's output: (its class, the classes it reads)
     let mut could: Vec<(u32, Vec<u32>)> = Vec::new();
+    // the AND and OR gates with their input literals, for the binary codes:
+    // the first one found for an output literal
+    let mut shaped: Vec<Vec<i32>> = Vec::new();
+    let mut shaped_out: HashSet<i32> = HashSet::new();
     let mut three: HashMap<[u32; 3], u8> = HashMap::new();
     for i in 0..f.len() {
         if i % 1024 == 0 {
@@ -940,6 +977,11 @@ fn scan(f: &Formula, val: &[i8], start: u64, budget: u64, stop: &AtomicBool, clo
                 ins.sort_unstable();
                 ins.dedup();
                 could.push((out, ins));
+                if shaped_out.insert(-t) {
+                    let mut lits: Vec<i32> = keep.iter().copied().filter(|&l| l != t).collect();
+                    lits.sort_unstable_by_key(|l| l.unsigned_abs());
+                    shaped.push(lits);
+                }
             }
         }
     }
@@ -1002,8 +1044,32 @@ fn scan(f: &Formula, val: &[i8], start: u64, budget: u64, stop: &AtomicBool, clo
     }
     let gates = defined.iter().filter(|&&d| d).count();
     let ring = has.iter().filter(|&&h| h).count() - gates;
+    // binary codes: the gates over one set of free variables, by their sign patterns
+    let mut groups: HashMap<Vec<u32>, Vec<Vec<bool>>> = HashMap::new();
+    for (k, lits) in shaped.iter().enumerate() {
+        if k % 4096 == 0 {
+            poll!();
+        }
+        work += lits.len() as u64;
+        let vs: Vec<u32> = lits.iter().map(|&l| var(l)).collect();
+        if vs.windows(2).any(|w| w[0] == w[1]) || vs.iter().any(|&v| val[v as usize] != 0 || defined[rep[v as usize].unsigned_abs() as usize]) {
+            // (a coded choice may sit on variables in a ring of shapes: only settled gates are ruled out)
+            continue;
+        }
+        groups.entry(vs).or_default().push(lits.iter().map(|&l| l > 0).collect());
+    }
+    let mut codes = (0usize, 0usize, 0usize);
+    for (vs, pats) in &groups {
+        // three value tests or more, and no two of them on the same code
+        let distinct: HashSet<&Vec<bool>> = pats.iter().collect();
+        if pats.len() >= 3 && distinct.len() == pats.len() {
+            codes.0 += 1;
+            codes.1 += pats.len();
+            codes.2 = codes.2.max(vs.len());
+        }
+    }
     *clock = start + work;
-    Some(Scan { imp, rep, defined, gates, ring, work })
+    Some(Scan { codes, imp, rep, shaped: has, gates, ring, work })
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,9 +1078,33 @@ fn scan(f: &Formula, val: &[i8], start: u64, budget: u64, stop: &AtomicBool, clo
 
 /// Maximal paths of direct links, each lowest bit first and in one
 /// orientation (a chain and its mirror are one number).
-/// `work` counts the literals walked; past `allowance` the search for paths
-/// ends with what it has (the flag in the result says so).
-fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, many: &mut u64, allowance: u64, work: &mut u64) -> (Vec<Vec<i32>>, bool) {
+/// What the search for paths may spend and where it reports it.
+struct Meter<'a> {
+    start: u64,
+    budget: u64,
+    stop: &'a AtomicBool,
+    clock: &'a mut u64,
+    work: u64,
+    polled: u64,
+}
+
+impl<'a> Meter<'a> {
+    /// Count `n` units; every few thousand, write the clock and look at the
+    /// limit and the stop flag. True when the search must end.
+    fn spend(&mut self, n: u64) -> bool {
+        self.work += n;
+        if self.work - self.polled < 4096 {
+            return false;
+        }
+        self.polled = self.work;
+        *self.clock = self.start + self.work;
+        *self.clock > self.budget || self.stop.load(Ordering::Relaxed)
+    }
+}
+
+/// The flag in the result says the search was ended by its limit or the
+/// stop flag. `long` counts the paths left out for their length.
+fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, many: &mut u64, long: &mut u64, m: &mut Meter) -> (Vec<Vec<i32>>, bool) {
     let empty: Vec<i32> = Vec::new();
     let mut height: HashMap<i32, u32> = HashMap::new();
     let mut state: HashMap<i32, u8> = HashMap::new();
@@ -1027,8 +1117,7 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, ma
         let mut stack: Vec<(i32, usize)> = vec![(root, 0)];
         state.insert(root, 1);
         while let Some(&mut (x, ref mut at)) = stack.last_mut() {
-            *work += 1;
-            if *work > allowance {
+            if m.spend(1) {
                 return (Vec::new(), true);
             }
             let kids = direct.get(&x).unwrap_or(&empty);
@@ -1059,16 +1148,24 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, ma
     let h_of = |u: i32| -> u32 { height.get(&u).copied().unwrap_or(1) };
     let mut out: Vec<Vec<i32>> = Vec::new();
     let mut have: HashSet<Vec<i32>> = HashSet::new();
-    let mut emit = |path: &[i32], out: &mut Vec<Vec<i32>>| {
+    let mut emit = |path: &[i32], out: &mut Vec<Vec<i32>>, long: &mut u64| {
         // an end that two chains share is a guard on both and a bit of neither
-        let mut path = path.to_vec();
-        while path.len() >= 2 && direct.get(&path[0]).unwrap_or(&empty).iter().filter(|w| direct.get(w).map_or(false, |d| !d.is_empty())).count() >= 2 {
-            path.remove(0);
+        let (mut a, mut b) = (0usize, path.len());
+        while b - a >= 2 && direct.get(&path[a]).unwrap_or(&empty).iter().filter(|w| direct.get(w).map_or(false, |d| !d.is_empty())).count() >= 2 {
+            a += 1;
         }
-        while path.len() >= 2 && pred.get(path.last().unwrap()).unwrap_or(&empty).iter().filter(|u| pred.get(u).map_or(false, |d| !d.is_empty())).count() >= 2 {
-            path.pop();
+        while b - a >= 2 && pred.get(&path[b - 1]).unwrap_or(&empty).iter().filter(|u| pred.get(u).map_or(false, |d| !d.is_empty())).count() >= 2 {
+            b -= 1;
         }
+        let path = &path[a..b];
         if path.len() < MIN_MEMBERS {
+            return;
+        }
+        if path.len() > 4 * MAX_BITS {
+            // far past what can be read value by value, even with a few
+            // helpers taken out: testing every member would cost its length
+            // squared
+            *long += 1;
             return;
         }
         let mut lits: Vec<i32> = path.iter().rev().copied().collect();
@@ -1080,31 +1177,53 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, ma
             out.push(lits);
         }
     };
+    let sorted_kids = |x: i32, on: &HashSet<i32>| -> Vec<i32> {
+        let mut nxt: Vec<i32> = direct.get(&x).unwrap_or(&empty).iter().copied().filter(|w| !on.contains(w)).collect();
+        nxt.sort_unstable_by_key(|&w| (std::cmp::Reverse(h_of(w)), var(w), w));
+        nxt
+    };
     let mut sources: Vec<i32> = direct.keys().copied().filter(|u| pred.get(u).map_or(true, |p| p.is_empty())).collect();
     sources.sort_unstable_by_key(|&u| (std::cmp::Reverse(h_of(u)), var(u), u));
     for src in sources {
-        if *work > allowance {
+        if m.spend(1) {
             return (out, true);
         }
         let mut count = 0usize;
         if out.len() < TOTAL_PATHS {
-            let mut stack: Vec<Vec<i32>> = vec![vec![src]];
-            while let Some(path) = stack.pop() {
-                *work += path.len() as u64 + 1;
-                if count > PER_SOURCE || *work > allowance {
-                    break;
+            // every maximal path from here, in the order of a walk that takes
+            // the tallest successor first; one path is kept and grown in place
+            let mut path: Vec<i32> = vec![src];
+            let mut on: HashSet<i32> = HashSet::new();
+            on.insert(src);
+            let mut stack: Vec<(Vec<i32>, usize)> = vec![(sorted_kids(src, &on), 0)];
+            while let Some((kids, at)) = stack.last_mut() {
+                if m.spend(1) {
+                    return (out, true);
                 }
-                let mut nxt: Vec<i32> = direct.get(path.last().unwrap()).unwrap_or(&empty).iter().copied().filter(|w| !path.contains(w)).collect();
-                if nxt.is_empty() {
-                    emit(&path, &mut out);
+                if kids.is_empty() && *at == 0 {
+                    // a path's end: nothing below that is not on the path already
+                    *at = 1;
+                    if m.spend(path.len() as u64) {
+                        return (out, true);
+                    }
+                    emit(&path, &mut out, long);
                     count += 1;
-                    continue;
+                    if count > PER_SOURCE {
+                        break;
+                    }
                 }
-                nxt.sort_unstable_by_key(|&w| (std::cmp::Reverse(h_of(w)), var(w), w));
-                for &w in nxt.iter().rev() {
-                    let mut p2 = path.clone();
-                    p2.push(w);
-                    stack.push(p2);
+                if *at < kids.len() {
+                    let w = kids[*at];
+                    *at += 1;
+                    path.push(w);
+                    on.insert(w);
+                    let next = sorted_kids(w, &on);
+                    stack.push((next, 0));
+                } else {
+                    stack.pop();
+                    if let Some(w) = path.pop() {
+                        on.remove(&w);
+                    }
                 }
             }
             if count <= PER_SOURCE {
@@ -1114,18 +1233,25 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, ma
         }
         // past a limit: the longest path from here
         let mut path = vec![src];
+        let mut on: HashSet<i32> = HashSet::new();
+        on.insert(src);
         loop {
-            *work += path.len() as u64 + 1;
-            if *work > allowance {
+            if m.spend(1) {
                 return (out, true);
             }
-            let nxt: Vec<i32> = direct.get(path.last().unwrap()).unwrap_or(&empty).iter().copied().filter(|w| !path.contains(w)).collect();
+            let nxt: Vec<i32> = direct.get(path.last().unwrap()).unwrap_or(&empty).iter().copied().filter(|w| !on.contains(w)).collect();
             match nxt.iter().copied().max_by_key(|&w| (h_of(w), std::cmp::Reverse(var(w)), w)) {
-                Some(w) => path.push(w),
+                Some(w) => {
+                    path.push(w);
+                    on.insert(w);
+                }
                 None => break,
             }
         }
-        emit(&path, &mut out);
+        if m.spend(path.len() as u64) {
+            return (out, true);
+        }
+        emit(&path, &mut out, long);
     }
     (out, false)
 }
@@ -1149,7 +1275,8 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
         derived.notes.push("numbers: not read, no work left for it".to_string());
         return;
     }
-    let p = Prop::new(f);
+    let mut p = Prop::new(f);
+    p.limit = budget.saturating_sub(base);
     *ticks = base + p.steps;
     let mut rd = Reader { p, derived, budget, base, ticks, stop, halt: false, counts: Counts::default(), numbers: Vec::new() };
     if rd.p.conflict {
@@ -1169,7 +1296,11 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     rd.p.steps += sc.work;
     rd.counts.gates = sc.gates;
     rd.counts.ring = sc.ring;
-    let free = |v: u32, rd: &Reader| -> bool { rd.p.val[v as usize] == 0 && sc.rep[v as usize] == v as i32 && !sc.defined[v as usize] };
+    let codes = sc.codes;
+    // a bit is a true input: open, the one name of its class, and no shape
+    // could define it (a variable in a ring of shapes, such as a member of
+    // an exactly-one group, is left out: thousands of them imply each other)
+    let free = |v: u32, rd: &Reader| -> bool { rd.p.val[v as usize] == 0 && sc.rep[v as usize] == v as i32 && !sc.shaped[v as usize] };
     rd.counts.free = (1..=f.vars as u32).filter(|&v| free(v, &rd)).count();
     let lit_cls = |l: i32| -> i32 {
         let r = sc.rep[l.unsigned_abs() as usize];
@@ -1239,10 +1370,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     let cands = if rd.spent() {
         Vec::new()
     } else {
-        let allowance = budget.saturating_sub(base + rd.p.steps);
-        let mut walked = 0u64;
-        let (cands, cut) = candidates(&direct, &pred, &mut many, allowance, &mut walked);
+        let mut meter = Meter { start: base + rd.p.steps, budget, stop, clock: &mut *rd.ticks, work: 0, polled: 0 };
+        let mut long = 0u64;
+        let (cands, cut) = candidates(&direct, &pred, &mut many, &mut long, &mut meter);
+        let walked = meter.work;
         rd.p.steps += walked;
+        rd.counts.too_long += long;
         if cut {
             rd.halt = true;
         }
@@ -1356,8 +1489,8 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     let added = c.equal + c.bound + c.dead + c.unit + c.steps;
     let status = if rd.halt { "stopped" } else { "read" };
     println!(
-        "c numbers status={} numbers={} values={} counted={} added={} equal={} bound={} dead={} unit={} steps={} there={} noproof={} holes={} partial={} candidates={} free={} gates={} ring={} notbit={} ends={} long={} manypaths={} work={}",
-        status, c.numbers, values_text, c.counted, added, c.equal, c.bound, c.dead, c.unit, c.steps, c.have, c.noproof, c.holes, c.partial, c.candidates, c.free, c.gates, c.ring, c.not_a_bit, c.end_dropped, c.too_long, many, work
+        "c numbers status={} numbers={} values={} counted={} added={} equal={} bound={} dead={} unit={} steps={} there={} noproof={} holes={} partial={} candidates={} free={} gates={} ring={} notbit={} ends={} long={} manypaths={} codes={} codetests={} codebits={} work={}",
+        status, c.numbers, values_text, c.counted, added, c.equal, c.bound, c.dead, c.unit, c.steps, c.have, c.noproof, c.holes, c.partial, c.candidates, c.free, c.gates, c.ring, c.not_a_bit, c.end_dropped, c.too_long, many, codes.0, codes.1, codes.2, work
     );
     if added > 0 || c.numbers > 0 {
         rd.derived.notes.push(format!(

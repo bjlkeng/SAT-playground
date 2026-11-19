@@ -13,15 +13,17 @@ count with three helpers): the reader lists "h2 -> g2", "g2 -> h2", "not h3
 path, writes the same four clauses to PROOF.derived.cnf, in the same order.
 A difference in one clause or in the order is a failure here.
 
-The reader is asked for exactly what the pass does: the two-literal clauses
-only (propagation is not asked for hidden links), no chain of two members,
-no pairs, no partial readers, the kinds equal, bound, dead and unit, and
+The reader is asked for exactly what the pass does: bits that no shape could
+define, linked by two-literal clauses (propagation is not asked for hidden
+links), no chain of two members, clauses only for numbers under a count, no
+pairs, no partial readers, the kinds equal, bound, dead and unit, and
 nothing without a short proof.
 
   catalog [--solver BIN] [--jobs N] [--proof]
                                       every record of the Z3 catalog with a
-                                      sorted-bit number, as written and
-                                      renumbered twice with signs flipped
+                                      sorted-bit number or a binary-coded
+                                      choice, as written and renumbered
+                                      twice with signs flipped
   files [--solver BIN] [--proof] FILE...
                                       formulas on disk (plain or .xz)
 With --proof the pass's proof also goes to VeriPB: every step, and the
@@ -59,7 +61,7 @@ MAX_BITS = 62
 def reader_clauses(n_vars, clauses):
     """What tools/number_read.py adds when it reads as the pass does."""
     r = nr.Reading(n_vars, clauses, full_scan=0, pairs=False, partial=False, short_limit=-1, kinds=KINDS,
-                   proved_only=True, max_bits=MAX_BITS)
+                   proved_only=True, max_bits=MAX_BITS, inputs_only=True, counted_only=True)
     if r.truncated:
         raise RuntimeError("the reader stopped at its budget")
     return [list(c) for c in r.link_clauses()], r
@@ -148,9 +150,14 @@ def _catalog_job(job):
         cnf = Path(d) / "f.cnf"
         write_cnf(cnf, rec["n_vars"], clauses)
         try:
-            want, _r = reader_clauses(rec["n_vars"], clauses)
+            want, r = reader_clauses(rec["n_vars"], clauses)
             got, report = pass_clauses(_SOLVER, cnf, d)
             msg = compare(name, want, got, report)
+            # the binary-coded choices: the same number, with the same number of value tests
+            codes = r.find_codes()
+            mine = (len(codes), sum(len(t) for _vs, t in codes))
+            if not msg and "codes" in report and mine != (int(report["codes"]), int(report["codetests"])):
+                msg = f"{name}: the reader finds {mine[0]} coded choices with {mine[1]} value tests, the pass {report['codes']} with {report['codetests']}"
             if not msg and _PROOF:
                 why = proof_problem(cnf, d)
                 msg = f"{name}: {why}" if why else ""
@@ -164,7 +171,8 @@ def cmd_catalog(a):
     global _CAT, _SOLVER, _PROOF
     _SOLVER = a.solver
     _PROOF = a.proof
-    _CAT = [rec for rec in zc.load(a.catalog) if any(i["kind"] == "order" and len(i["vars"]) >= 2 for i in rec["inputs"])]
+    _CAT = [rec for rec in zc.load(a.catalog)
+            if any((i["kind"] == "order" and len(i["vars"]) >= 2) or (i["kind"] == "binary" and len(i["values"]) >= 3) for i in rec["inputs"])]
     jobs = [(i, seed) for i in range(len(_CAT)) for seed in (None, 1, 2)]
     with multiprocessing.get_context("fork").Pool(a.jobs) as pool:
         rows = pool.map(_catalog_job, jobs, chunksize=4)

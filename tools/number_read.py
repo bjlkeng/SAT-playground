@@ -115,6 +115,7 @@ class Number:
         self.lits = lits              # lits[k] true <-> the value is above k; lits[k+1] -> lits[k]
         self.dead = set()             # values whose pattern propagation refutes
         self.readers = {}             # variable -> (mask of values where it is set true, mask where false)
+        self.unread = False           # too long to set value by value: nothing is known of it
 
     @property
     def n(self):
@@ -124,6 +125,10 @@ class Number:
         return [l if k < v else -l for k, l in enumerate(self.lits)]
 
     def live(self):
+        """The values no pattern refuted, in order; none for a chain that was
+        not read."""
+        if self.unread:
+            return []
         return [v for v in range(self.n + 1) if v not in self.dead]
 
 
@@ -214,7 +219,8 @@ def small_sat(clauses, limit=400):
 
 class Reading:
     def __init__(self, n_vars, clauses, budget=DEFAULT_BUDGET, full_scan=FULL_SCAN_VARS, pairs=True, partial="sample",
-                 short_limit=None, kinds=None, proved_only=False, max_bits=MAX_VALUES - 1):
+                 short_limit=None, kinds=None, proved_only=False, max_bits=MAX_VALUES - 1,
+                 inputs_only=False, counted_only=False):
         """`partial`: True links every partial reader (a placement that needs
         three numbers; there can be a million); "sample" tries PARTIAL_SAMPLE
         of them after the full readers are linked and only counts what is
@@ -230,7 +236,13 @@ class Reading:
         `added` is, in order, a list a proof checker can follow.
         `proved_only`: a link with no short proof is counted and not added
         (the solver's pass, src/structnum.rs, works this way: it adds only
-        what its proof can show).  `max_bits`: a longer chain is not read."""
+        what its proof can show).  `max_bits`: a longer chain is not read.
+        `inputs_only`: a bit must be a variable that no shape could define
+        at all; one in a ring of shapes (a member of an exactly-one group, a
+        gate next to a chain that reads two ways) is left out.
+        `counted_only`: only a number under a count (is_counted) gets
+        clauses.  The solver's pass sets both: it is meant for integers that
+        a model counts over, and must stay cheap and silent on a circuit."""
         self.n_vars = n_vars
         self.budget = budget
         self.full_scan = full_scan
@@ -240,6 +252,9 @@ class Reading:
         self.kinds = None if kinds is None else set(kinds)
         self.proved_only = proved_only
         self.max_bits = max_bits
+        self.inputs_only = inputs_only
+        self.counted_only = counted_only
+        self.shaped_any = set()
         self.added = []                # every clause given to propagation, in order: (clause, kind or "step")
         self.defs = {}
         self.p = Prop(n_vars, clauses)
@@ -372,6 +387,7 @@ class Reading:
                 if not entry[1] and entry[0] not in defined:
                     ready.append(entry[0])
         self.defined = defined
+        self.shaped_any = set(could)
         self.notes["defined"] = len(defined)
         self.notes["ring"] = len(could) - len(defined)
 
@@ -403,6 +419,8 @@ class Reading:
     def _free(self, v):
         """Not set at the root, not defined by a gate, and the one name of its
         class of equal variables."""
+        if self.inputs_only:
+            return self.p.val[v] == 0 and v not in self.same and v not in self.shaped_any
         return self.p.val[v] == 0 and v not in self.same and v not in self.defined
 
     def _chains(self):
@@ -488,7 +506,7 @@ class Reading:
                 by_var[v].append(t)
         chosen = []
         for t in sorted(seen, key=rank):
-            if len(seen[t].live()) < 2:
+            if seen[t].unread or len(seen[t].live()) < 2:
                 continue
             # the chains that could hold t as a function: they read or hold its first member
             first = abs(t[0])
@@ -560,6 +578,11 @@ class Reading:
             while len(path) >= 2 and sum(1 for u in pred.get(path[-1], ()) if pred.get(u)) >= 2:
                 path.pop()
             if len(path) < 2:
+                return
+            if len(path) > 4 * self.max_bits:
+                # far past what can be read value by value, even with a few
+                # helpers taken out: the bit test alone would cost its length squared
+                self.notes["too_long"] += 1
                 return
             lits = path[::-1]
             neg = sum(1 for l in lits if l < 0)
@@ -644,7 +667,7 @@ class Reading:
         tell the two values apart, and the member goes.  A real end bit is
         read by something: a count gives it back as a threshold, a test is
         on at one of the two values, a guard is off at one of them."""
-        while num.n > 2:
+        while num.n > 2 and not num.unread:
             for end, (a, b) in ((0, (0, 1)), (num.n - 1, (num.n - 1, num.n))):
                 if a in num.dead or b in num.dead:
                     continue
@@ -666,7 +689,10 @@ class Reading:
         """Set the chain to each value in turn and note what propagation sets."""
         num = Number(list(lits))
         if num.n > self.max_bits:
+            # not read: and "nothing reads its ends" must not be concluded from
+            # that (the end test would trim it down until it fits)
             self.notes["too_long"] += 1
+            num.unread = True
             return num
         p = self.p
         own = {abs(l) for l in num.lits}
@@ -791,7 +817,7 @@ class Reading:
         todo = []
         for num in self.numbers:
             live = num.live()
-            if len(live) < 2:
+            if len(live) < 2 or (self.counted_only and not is_counted(num)):
                 continue
             # a dead value: the values below and above it have nothing between them
             for v in sorted(num.dead):
@@ -1031,10 +1057,11 @@ def profile_of(num):
 
 
 def is_counted(num):
-    """The mark of an integer under a count: four values or more, and every
-    cut point but one at most has a variable equal to it."""
+    """The mark of an integer under a count: three bits or more, and every
+    cut point between its values, but one at most, has a variable equal to
+    it."""
     values, cuts, _tests = profile_of(num)
-    return values >= 4 and cuts >= values - 2
+    return num.n >= 3 and values >= 2 and cuts >= values - 2
 
 
 def is_valued(num, at_least=2):
@@ -1176,7 +1203,7 @@ STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=
 # the census by the solver's own pass (src/structnum.rs): its report line, field for field
 SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "added", "equal", "bound", "dead", "unit",
                   "steps", "there", "noproof", "holes", "partial", "candidates", "free", "gates", "ring", "notbit", "ends",
-                  "long", "manypaths", "work", "error"]
+                  "long", "manypaths", "codes", "codetests", "codebits", "work", "error"]
 
 
 def solver_row(job):
@@ -1656,6 +1683,14 @@ def selftest(a):
     assert dead_start.notes["root_conflict"] == 1 and dead_start.find_codes() == [] and dead_start.link_clauses() == []
     assert row_of("x", 1, 2, False, dead_start, 0.0)["error"] == "root conflict"
     assert Reading(7, cl, budget=3).truncated == "budget"
+    # a chain too long to read is left alone, helpers and all: no clause, and
+    # the end test does not trim it down to a length that fits (it knows
+    # nothing of a chain it did not read)
+    long_chain = [[k, -(k + 1)] for k in range(1, 12)] + [[-13, 3, 7], [13, -3], [13, -7], [14, -5, -9], [-14, 5], [-14, 9]]
+    assert {c for _k, c, _h in Reading(14, long_chain, partial=True).links} == {(-13, 3), (14, -9)}
+    for bits in (8, 3):
+        short = Reading(14, long_chain, partial=True, max_bits=bits)
+        assert short.links == [] and short.numbers == [] and short.notes["too_long"] >= 1, (bits, short.links, short.notes)
     # the small search
     assert small_sat([]) and not small_sat([[]]) and not small_sat([[1], [-1]])
     assert small_sat([[1, 2], [-1, 2], [1, -2]]) and not small_sat([[1, 2], [-1, 2], [1, -2], [-1, -2]])

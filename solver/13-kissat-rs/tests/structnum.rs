@@ -231,15 +231,23 @@ fn the_pass_stops_at_its_work_limit() {
 
 #[test]
 fn a_chain_past_the_mask_is_left_alone() {
-    // 64 sorted bits: the values do not fit the masks the patterns are kept
-    // in. The pass must leave the chain unread (and not trip over it), also
-    // with a few helpers that read it
+    // 64 sorted bits, each with a helper equal to it by an OR with the bit
+    // above (so the chain is under a count): the values do not fit the masks
+    // the patterns are kept in. The pass must leave the chain unread and not
+    // trip over it
+    let chain = |bits: i64| -> (i64, Vec<Vec<i64>>) {
+        let mut cl: Vec<Vec<i64>> = (1..bits).map(|k| vec![k, -(k + 1)]).collect();
+        for k in 1..bits {
+            // h = bits + k is "bit k or bit k + 1", which is bit k
+            let h = bits + k;
+            cl.extend([vec![-h, k, k + 1], vec![h, -k], vec![h, -(k + 1)]]);
+        }
+        (2 * bits - 1, cl)
+    };
     let fx = Fixture::new("num-long");
     let (cnf, proof) = (fx.path("long.cnf"), fx.path("long.proof"));
-    let mut cl: Vec<Vec<i64>> = (1..64i64).map(|k| vec![k, -(k + 1)]).collect();
-    // 65 = bit 10 or bit 40 (so 65 equals bit 10), 66 = bit 20 and bit 50 (equals bit 50)
-    cl.extend([vec![-65, 10, 40], vec![65, -10], vec![65, -40], vec![66, -20, -50], vec![-66, 20], vec![-66, 50]]);
-    write_cnf(&cnf, 66, &cl);
+    let (vars, cl) = chain(64);
+    write_cnf(&cnf, vars, &cl);
     let (out, err) = run_num(&cnf, &proof, &[]);
     assert_eq!(status(&out), "SATISFIABLE", "{}\n{}", out, err);
     let r = report(&out);
@@ -247,14 +255,81 @@ fn a_chain_past_the_mask_is_left_alone() {
     assert_eq!(r.get("numbers").map(String::as_str), Some("0"), "{:?}", r);
     assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
     assert_ne!(r.get("long").map(String::as_str), Some("0"), "{:?}", r);
-    // one bit fewer is read: 63 sorted bits
-    let mut cl: Vec<Vec<i64>> = (1..62i64).map(|k| vec![k, -(k + 1)]).collect();
-    cl.extend([vec![-65, 10, 40], vec![65, -10], vec![65, -40], vec![66, -20, -50], vec![-66, 20], vec![-66, 50]]);
-    write_cnf(&cnf, 66, &cl);
+    // 62 bits are read: "h -> bit k" is what the encoding lacks, for each helper
+    let (vars, cl) = chain(62);
+    write_cnf(&cnf, vars, &cl);
     let (out, _err) = run_num(&cnf, &proof, &[]);
     let r = report(&out);
     assert_eq!(r.get("long").map(String::as_str), Some("0"), "{:?}", r);
-    // "65 -> bit 10" and "bit 50 -> 66" are what the encoding lacks
+    assert_eq!(r.get("numbers").map(String::as_str), Some("1"), "{:?}", r);
     let d = derived(&proof);
-    assert!(d.contains(&vec![-65, 10]) && d.contains(&vec![66, -50]), "{:?}", d);
+    assert_eq!(d.len(), 61, "{:?}", d);
+    assert!(d.contains(&vec![-63, 1]) && d.contains(&vec![-123, 61]), "{:?}", d);
+}
+
+#[test]
+fn a_very_long_chain_costs_its_length_and_no_more() {
+    // 200,000 variables, each implying the one before. No number is read off
+    // it (it is far past the masks), and finding that out must cost about
+    // its length: walking it with one path copied a step, or testing every
+    // member against all the others, would be its length squared
+    let fx = Fixture::new("num-huge");
+    let cnf = fx.path("huge.cnf");
+    let n = 200_000i64;
+    let cl: Vec<Vec<i64>> = (1..n).map(|k| vec![k, -(k + 1)]).collect();
+    write_cnf(&cnf, n, &cl);
+    let on = run(&cnf, &["--structnum=1"], &[]);
+    let r = report(&on.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(r.get("added").map(String::as_str), Some("0"), "{:?}", r);
+    assert_ne!(r.get("long").map(String::as_str), Some("0"), "{:?}", r);
+    let work: u64 = r["work"].parse().unwrap();
+    assert!(work < 40 * n as u64, "{} units of work for a chain of {}", work, n);
+    // and it stops at a limit set in the middle of the walk
+    let cut = run(&cnf, &["--structnum=1", "--structnumticks=1500"], &[]);
+    let r = report(&cut.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("stopped"), "{:?}", r);
+    let spent: u64 = r["work"].parse().unwrap();
+    assert!(spent <= 1_500_000 + 20_000, "the pass ran to {} with a limit of 1,500,000", spent);
+}
+
+#[test]
+fn work_inside_a_long_clause_is_counted_and_limited() {
+    // four sorted bits under a count, and 2,000 gates in a row that go off one
+    // after the other once the lowest bit is off (gate j is "gate j - 1 and
+    // t"), with one clause over all of them. Each time a gate goes off, the
+    // clause is searched for another literal to watch, past all the gates
+    // that went off before: 1 + 2 + ... + 2,000 looks, two million a
+    // propagation. They are work, and the limit holds in the middle of one
+    let fx = Fixture::new("num-wide");
+    let cnf = fx.path("wide.cnf");
+    let mut cl: Vec<Vec<i64>> = vec![vec![1, -2], vec![2, -3], vec![3, -4]];
+    for k in 1..4i64 {
+        let h = 4 + k; // 5, 6, 7: "bit k or bit k + 1", which is bit k
+        cl.extend([vec![-h, k, k + 1], vec![h, -k], vec![h, -(k + 1)]]);
+    }
+    let t = 8i64;
+    let gate = |j: i64| 8 + j; // gates 9 ..= 2008
+    let count = 2000i64;
+    for j in 1..=count {
+        let below = if j == 1 { 1 } else { gate(j - 1) };
+        cl.extend([vec![-gate(j), below], vec![-gate(j), t], vec![gate(j), -below, -t]]);
+    }
+    let mut long: Vec<i64> = (1..=count).map(gate).collect();
+    long.push(gate(count) + 1);
+    cl.push(long);
+    write_cnf(&cnf, gate(count) + 1, &cl);
+    let on = run(&cnf, &["--structnum=1"], &[]);
+    let r = report(&on.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(r.get("numbers").map(String::as_str), Some("1"), "{:?}", r);
+    let work: u64 = r["work"].parse().unwrap();
+    assert!(work > 2_000_000, "the looks inside the long clause are not in the work: {}", work);
+    let cut = run(&cnf, &["--structnum=1", "--structnumticks=300"], &[]);
+    let r = report(&cut.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("stopped"), "{:?}", r);
+    let spent: u64 = r["work"].parse().unwrap();
+    assert!(spent <= 300_000 + 10_000, "the pass ran to {} with a limit of 300,000", spent);
+    assert_eq!(r.get("added").map(String::as_str), Some("0"), "nothing may be concluded from a propagation cut short: {:?}", r);
+    assert_eq!(cut.status, on.status);
 }
