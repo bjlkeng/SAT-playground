@@ -1,0 +1,9 @@
+# Z3, for tools/z3_catalog.py `build` only (bead SAT-playground-d96.9.1).
+# Z3 writes the catalog's toys; nothing else needs it, and the solver never
+# does.  The catalog's records and shape table depend on the version, so it
+# is pinned: with another version, rebuild and re-read the table.
+#
+#   uv venv ~/.cache/sat13-z3/venv --python 3.12
+#   uv pip install --python ~/.cache/sat13-z3/venv/bin/python -r tools/z3/requirements.txt
+#   ~/.cache/sat13-z3/venv/bin/python tools/z3_catalog.py build
+z3-solver==5.4.1.0

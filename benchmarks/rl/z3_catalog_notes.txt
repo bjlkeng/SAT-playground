@@ -1,0 +1,14 @@
+296 records from 70 toys and 14 option sets, Z3 5.4.1
+Toy and option sets that gave no record, and why:
+int-ne-iff-0_3 [pb.sorting]: not kept, the clauses do not mean the model: test T_ne_1 at joint value 1: can be True (and 2 more)
+int-ne-imp-0_3 [pb.sorting]: not kept, the clauses do not mean the model: guard T_ne_1 at joint value 1: can be true where its test is false (and 2 more)
+int-ne-iff-0_6 [pb.sorting]: not kept, the clauses do not mean the model: test T_ne_1 at joint value 1: can be True (and 5 more)
+int-ne-imp-0_6 [pb.sorting]: not kept, the clauses do not mean the model: guard T_ne_1 at joint value 1: can be true where its test is false (and 5 more)
+int-ne-iff-2_7 [pb.sorting]: not kept, the clauses do not mean the model: test T_ne_3 at joint value 1: can be True (and 4 more)
+int-ne-imp-2_7 [pb.sorting]: not kept, the clauses do not mean the model: guard T_ne_3 at joint value 1: can be true where its test is false (and 4 more)
+pair-weighted [pb.sorting]: not kept, the clauses do not mean the model: test T_w_2 at joint value 0: can be False (and 27 more)
+weighted-le [pb.sorting]: not kept, the clauses do not mean the model: test T_w_3 at joint value 0: can be False (and 24 more)
+weighted-ge [pb.sorting]: not kept, the clauses do not mean the model: test T_w_5 at joint value 3: can be False (and 25 more)
+weighted-eq [pb.sorting]: not kept, the clauses do not mean the model: test T_w_4 at joint value 1: can be False (and 24 more)
+hard-pair-ne [pb.sorting]: not kept, the clauses do not mean the model: joint value 0: a model exists: True, the record says False (and 3 more)
+hard-alldiff-3 [pb.sorting]: not kept, the clauses do not mean the model: joint value 0: a model exists: True, the record says False (and 24 more)

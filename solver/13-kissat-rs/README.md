@@ -8766,6 +8766,127 @@ to a check. Round 5 was clean. The record runs above were made with the
 tool as it was after round 2 (the later fixes concern SAT answers, a lost
 chain and a reused folder, none of which occur in them).
 
+## Numbers stored as sorted bits (epic `SAT-playground-d96.9`, from 2026-11-18)
+
+The 20 Bel's Pyramid cells are 9.3% and 11.1% of the wall PAR-2 of the last
+400-cell run (2026-11-16, seeds 2 and 3), with 5 and 7 of them unsolved. They
+were written by Z3: a model over integers, exported to clauses ("Reading the
+bp, oisc and smt2 cells" above). An integer becomes sorted bits, a test such
+as "x = 2" becomes a count over those bits, and unit propagation (the
+solver's cheap rule: when all literals of a clause but one are false, the
+last is true) then runs from the bits to the test and not back. Adding the
+missing two-literal clauses to 9 cells by hand gave 15 solved runs against 14
+of 18, PAR-2 0.70x. This epic does it for any formula: a catalog of how Z3
+writes such things, a reader that finds them by what they mean, a census, the
+added clauses in the solver, and the runs. Nothing goes on by default without
+the owner's word (bead `d96.9.7`).
+
+### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
+
+**What it is.** `tools/z3_catalog.py build` makes one toy per primitive and
+per encoding option, with Z3 itself, and keeps for each toy the clauses and
+what they mean. 70 toys: one integer with tests = c, != c, <= c, >= c (as
+T <-> test and as T -> test); two and three integers with sums, differences
+and comparisons; counts and weighted sums over plain Booleans; a choice
+among k values (Z3's enumeration sort); if-then-else chains; the pyramid's
+channel in small (a placement is three value tests at once); and constraints
+with no test variable. 14 option sets: the chain that wrote the pyramid
+cells (`lia2card`, `dt2bv`, `card2bv` with `pb.solver=totalizer`,
+`bit-blast`, `tseitin-cnf`) and 13 that change one option each. That gives
+296 distinct records (`benchmarks/rl/z3_catalog.jsonl.xz`); a record lists
+every option set that gives exactly its clauses.
+
+Every record is checked by brute force, without Z3
+(`tools/z3_catalog.py check`, 2 s): each joint value of the inputs has a
+model, no other pattern of an input's variables has one, and under each
+joint value every test is what its table says. The tables are also checked
+against Z3's own reading of the model at build time. Two builds give the
+same bytes.
+
+**A worked example: `int-eq-iff-0_3`, the base setting.** One integer x in
+0..3 and four tests T_c <-> (x = c). Z3 writes 19 variables and 50 clauses.
+x is three sorted bits (variables 1, 3, 4: x >= 1, x >= 2, x >= 3, with the
+clauses "4 -> 3" and "3 -> 1"), so the legal patterns are 000, 100, 110,
+111. "x = 2" is written as "at least two of the three bits, and not all
+three", with 12 helper variables for the four tests.
+
+| what is set | what propagation does | what should follow |
+|---|---|---|
+| the bits to 110 (x = 2) | T_2 on, the other three tests off | the same: from the bits it always arrives |
+| T_2 on | two helpers on, one off, T_3 off; no bit | bit 1 on, bit 3 on, bit 4 off |
+| T_2 on and bit 1 off | a conflict | so the clause "T_2 -> bit 1" is checkable as it stands (RUP) |
+
+Summed over the four tests and both signs: 14 bit literals should follow
+from a test alone, propagation sets 6 (the two end values, x = 0 and x = 3,
+where "none" and "all" leave no choice), and the 8 missing ones are each
+found the way the last row shows.
+
+**What the catalog says** (`benchmarks/rl/z3_catalog_shapes.tsv`, one row a
+record; `tools/z3_catalog.py summary`). "Need" counts the input literals
+that must follow in a situation, "found" those propagation sets:
+
+| primitive | records | with a gap | a test alone: need, found | a test and one input literal | a test and two | constraints with no test: one literal, two |
+|---|---|---|---|---|---|---|
+| one integer and its tests | 109 | 109 | 2,760, 689 | 592, 109 | | |
+| two integers | 59 | 59 | 1,160, 510 | 3,150, 1,105 | 282, 77 | |
+| three integers | 23 | 23 | 546, 300 | 2,412, 936 | 3,084, 966 | |
+| the pyramid's channel | 10 | 10 | 1,440, 480 | 0, 0 | 30, 0 | |
+| constraints with no test | 17 | 17 | | | | 244, 56 and 96, 0 |
+| counts over plain Booleans | 40 | 8 | 405, 405 | 1,800, 1,680 | 3,150, 2,520 | |
+| weighted sums over Booleans | 12 | 12 | 224, 193 | 1,040, 647 | 1,128, 693 | |
+| a choice among k values | 9 | 8 | 76, 66 | 148, 96 | 66, 38 | 12, 0 and 24, 0 |
+| if-then-else chains | 17 | 15 | 144, 24 | 704, 307 | 168, 160 | 112, 0 and 72, 6 |
+
+- **Every record with a sorted-bit number has the gap: 231 of 231.** From a
+  test alone 6,050 bit literals should follow; propagation sets 2,003. Of
+  the rest, 3,863 are checkable as they stand (the last row of the example);
+  184 need a few such steps in a row.
+- **From the bits to the tests nothing is missing: 60,134 of 60,134.** With
+  every input set to a value, propagation sets every test, in every record.
+  This is what the reader (next step) leans on: set a number to each of its
+  values in turn and see what follows.
+- **The counting circuit is not at fault; it is not told that its inputs are
+  sorted.** The same counts over plain Booleans lose nothing in the base
+  setting (the 8 records with a gap there are all `cardinality.encoding=circuit`,
+  which counts with adders).
+- **The options change the clauses and not the gap.** `ordered`, `unate`
+  and `circuit` each write the counts another way (for `int-eq-iff-0_6`: 253
+  clauses in the base setting, 259, 391 and 855), and the test-alone numbers
+  are the same 44 needed, 12 found in all of them. `pb.solver` only matters
+  for weighted sums and for "!=" (an integer sum compared with a constant);
+  `grouped` and `bimander` change nothing in these toys.
+- **Sums and comparisons of two or three numbers are worse.** They are
+  counts over the bits of both numbers (x <= y is "at most 3 of x's bits and
+  the opposites of y's"). There the missing consequences need a test and one
+  or two bits together, so two-literal clauses do not close them
+  (`pair-rel-0_3x0_3`: 92 needed with one more literal, 33 found). The
+  pyramid itself has none of these in its channel: a placement alone should
+  set 144 literals in the small channel toy and sets 48, and every one of
+  the 96 missing is a two-literal clause checkable as it stands.
+
+**Two things Z3 does that a generator has to know.**
+- With `pb.solver=sorting`, 12 toys come out with clauses that do not mean
+  the model (`benchmarks/rl/z3_catalog_notes.txt`). The smallest: x and y in
+  0..3 with the one constraint x != y; the clauses still have a model with
+  x = y = 0. Those records are not kept. It is not the setting that wrote the
+  pyramid cells, and nothing here depends on it. Seen with Z3 5.4.1; not
+  reported to Z3 (the owner's call).
+- This chain of steps leaves a `distinct` over three or more terms as it is,
+  which is no clause; the toys write it pair by pair.
+
+**Caveats.** One Z3 version (5.4.1, pinned in `tools/z3/requirements.txt`);
+the pyramid cells were written by a version we do not know, and its
+clauses may differ in shape. That is why the reader goes by meaning and not
+by shape. The toys are small (3 to 7 values a
+number, at most three numbers), so the table says which consequences an
+encoding loses, not how much that costs a search.
+
+**Tools.** `tools/z3_catalog.py` (`build` needs Z3 in a venv; `check`,
+`table`, `summary`, `list`, `emit` and `selftest` do not);
+`tools/cnf_prop.py` (unit propagation and a small complete search, shared
+with the reader); `python3 tools/z3_catalog.py selftest` and
+`python3 tools/cnf_prop.py selftest`.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
