@@ -112,6 +112,9 @@ def pass_clauses(solver, cnf_path, workdir, timeout=3600):
 
 def compare(name, want, got, report):
     """'' when the two lists are the same, else what differs."""
+    if report.get("status") == "root-conflict":
+        # the formula's own units refute it: nothing to read, for either of the two
+        return "" if not want and not got else f"{name}: the units refute the formula, and clauses were added"
     if report.get("status") != "read":
         return f"{name}: the pass says status={report.get('status')}"
     if want == got:
@@ -253,6 +256,13 @@ def cmd_selftest(a):
         assert "reports 5 added" in compare("toy", want, got2, rep2)
         got2, rep2 = pass_clauses(fake(want, ok_line.replace("status=read", "status=stopped")), cnf, d)
         assert "status=stopped" in compare("toy", want, got2, rep2)
+        # a formula that its own units refute: both say nothing, and that is a match
+        dead = Path(d) / "dead.cnf"
+        write_cnf(dead, 1, [[1], [-1]])
+        want0, _r0 = reader_clauses(1, [[1], [-1]])
+        got0, rep0 = pass_clauses(a.solver, dead, d)
+        assert want0 == [] and got0 == [] and rep0["status"] == "root-conflict" and compare("dead", want0, got0, rep0) == "", (got0, rep0)
+        assert "clauses were added" in compare("dead", [], [[1, 2]], rep0)
         try:
             pass_clauses(fake(want, ""), cnf, d)
             raise AssertionError("a run without a report line passed")

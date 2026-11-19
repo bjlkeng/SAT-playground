@@ -101,7 +101,9 @@ struct Prop {
 }
 
 impl Prop {
-    fn new(f: &Formula) -> Prop {
+    /// `limit` bounds the work from the first step on: the units of the
+    /// formula are propagated here, and that alone can be long.
+    fn new(f: &Formula, limit: u64) -> Prop {
         let nl = 2 * (f.vars as usize + 1);
         let mut p = Prop {
             val: vec![0; f.vars as usize + 1],
@@ -113,7 +115,7 @@ impl Prop {
             root: 0,
             conflict: false,
             steps: 0,
-            limit: u64::MAX,
+            limit,
             stopped: false,
         };
         let mut units: Vec<i32> = Vec::new();
@@ -1275,10 +1277,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
         derived.notes.push("numbers: not read, no work left for it".to_string());
         return;
     }
-    let mut p = Prop::new(f);
-    p.limit = budget.saturating_sub(base);
+    let p = Prop::new(f, budget.saturating_sub(base));
     *ticks = base + p.steps;
     let mut rd = Reader { p, derived, budget, base, ticks, stop, halt: false, counts: Counts::default(), numbers: Vec::new() };
+    if rd.p.stopped {
+        // the units of the formula alone took the pass to its limit
+        println!("c numbers status=stopped numbers=0 added=0 work={}", rd.p.steps);
+        rd.derived.notes.push(format!("numbers: not read, stopped at its limit while setting the formula's units, work {}K", rd.p.steps / 1000));
+        return;
+    }
     if rd.p.conflict {
         println!("c numbers status=root-conflict work={}", rd.p.steps);
         rd.derived.notes.push(format!("numbers: not read, the units refute the formula, work {}K", rd.p.steps / 1000));
@@ -1486,11 +1493,24 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
         values.sort_unstable();
     }
     let values_text = if values.is_empty() { "-".to_string() } else { values.iter().map(|(v, k)| format!("{}x{}", v, k)).collect::<Vec<_>>().join(",") };
+    let counted_text = {
+        let mut hist: HashMap<usize, usize> = HashMap::new();
+        for num in rd.numbers.iter().filter(|n| is_counted(n)) {
+            *hist.entry(num.n() + 1).or_insert(0) += 1;
+        }
+        let mut list: Vec<(usize, usize)> = hist.into_iter().collect();
+        list.sort_unstable();
+        if list.is_empty() {
+            "-".to_string()
+        } else {
+            list.iter().map(|(v, k)| format!("{}x{}", v, k)).collect::<Vec<_>>().join(",")
+        }
+    };
     let added = c.equal + c.bound + c.dead + c.unit + c.steps;
     let status = if rd.halt { "stopped" } else { "read" };
     println!(
-        "c numbers status={} numbers={} values={} counted={} added={} equal={} bound={} dead={} unit={} steps={} there={} noproof={} holes={} partial={} candidates={} free={} gates={} ring={} notbit={} ends={} long={} manypaths={} codes={} codetests={} codebits={} work={}",
-        status, c.numbers, values_text, c.counted, added, c.equal, c.bound, c.dead, c.unit, c.steps, c.have, c.noproof, c.holes, c.partial, c.candidates, c.free, c.gates, c.ring, c.not_a_bit, c.end_dropped, c.too_long, many, codes.0, codes.1, codes.2, work
+        "c numbers status={} numbers={} values={} counted={} countedvalues={} added={} equal={} bound={} dead={} unit={} steps={} there={} noproof={} holes={} partial={} candidates={} free={} gates={} ring={} notbit={} ends={} long={} manypaths={} codes={} codetests={} codebits={} work={}",
+        status, c.numbers, values_text, c.counted, counted_text, added, c.equal, c.bound, c.dead, c.unit, c.steps, c.have, c.noproof, c.holes, c.partial, c.candidates, c.free, c.gates, c.ring, c.not_a_bit, c.end_dropped, c.too_long, many, codes.0, codes.1, codes.2, work
     );
     if added > 0 || c.numbers > 0 {
         rd.derived.notes.push(format!(

@@ -1201,7 +1201,7 @@ SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
 STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0",
          "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0", "--ctlsplit=0"]
 # the census by the solver's own pass (src/structnum.rs): its report line, field for field
-SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "added", "equal", "bound", "dead", "unit",
+SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "countedvalues", "added", "equal", "bound", "dead", "unit",
                   "steps", "there", "noproof", "holes", "partial", "candidates", "free", "gates", "ring", "notbit", "ends",
                   "long", "manypaths", "codes", "codetests", "codebits", "work", "error"]
 
@@ -1315,7 +1315,8 @@ def cmd_report(a):
     # the two table kinds name things a little differently
     links = lambda r: num(r, "counted_links") if "counted_links" in r else num(r, "added")
     all_links = lambda r: num(r, "links") if "links" in r else num(r, "added")
-    values = lambda r: (r.get("counted_values") if "counted_values" in r else r.get("values", "")) or ""
+    # the values of the numbers under a count (not of every chain): each table kind has that column
+    values = lambda r: (r.get("counted_values") if "counted_values" in r else r.get("countedvalues", "")) or ""
     stopped = sum(1 for r in rows if r.get("stopped") or r.get("status") in ("stopped", "no-budget"))
     print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; stopped at the limit: {stopped}")
     read = [r for r in rows if not r["error"]]
@@ -1721,7 +1722,7 @@ def selftest(a):
         # the census by the solver's pass: a stand-in that prints the report
         # line, one that prints none, and a table of the other kind refused
         fake = Path(d) / "fake.sh"
-        fake.write_text("#!/bin/sh\necho 'c numbers status=read numbers=2 values=4x1,7x1 counted=1 added=5 equal=4 work=77'\n")
+        fake.write_text("#!/bin/sh\necho 'c numbers status=read numbers=2 values=3x1,7x1 counted=1 countedvalues=7x1 added=5 equal=4 work=77'\n")
         fake.chmod(0o755)
         st = Path(d) / "solver.tsv"
         sargs = argparse.Namespace(files=[str(ex)], out=str(st), workers=1, budget=0, seconds=60, mem_mb=0, max_clauses=0,
@@ -1730,7 +1731,8 @@ def selftest(a):
             cmd_census(sargs)
         with open(st, newline="") as fh:
             srows = list(csv.DictReader(fh, delimiter="\t"))
-        assert len(srows) == 1 and srows[0]["counted"] == "1" and srows[0]["values"] == "4x1,7x1" and srows[0]["work"] == "77", srows
+        assert len(srows) == 1 and srows[0]["counted"] == "1" and srows[0]["values"] == "3x1,7x1" and srows[0]["work"] == "77", srows
+        assert srows[0]["countedvalues"] == "7x1"
         fake.write_text("#!/bin/sh\necho 's UNKNOWN'\n")
         assert "no report line" in solver_row((str(ex), str(fake), 60, 0, []))["error"]
         assert solver_row((str(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf"), str(fake), 60, 0, []))["error"] == "holdout"
@@ -1745,6 +1747,10 @@ def selftest(a):
         with contextlib.redirect_stdout(buf):
             cmd_report(argparse.Namespace(tables=[str(st), str(table)], min_numbers=1))
         assert "2 files" in buf.getvalue() and "with a number under a count: 2" in buf.getvalue(), buf.getvalue()
+        # the family line gives the values of the numbers under a count, not of every chain:
+        # the reader's four-valued number and the stand-in's seven-valued one, and not the
+        # stand-in's three-valued chain that no count reads
+        assert "\t4x1 7x1\t" in buf.getvalue() and "3x1" not in buf.getvalue(), buf.getvalue()
         other = Path(d) / "other.tsv"
         other.write_text("a\tb\n1\t2\n")
         args.out = str(other)

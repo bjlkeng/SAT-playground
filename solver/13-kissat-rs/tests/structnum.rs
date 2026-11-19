@@ -333,3 +333,33 @@ fn work_inside_a_long_clause_is_counted_and_limited() {
     assert_eq!(r.get("added").map(String::as_str), Some("0"), "nothing may be concluded from a propagation cut short: {:?}", r);
     assert_eq!(cut.status, on.status);
 }
+
+#[test]
+fn the_limit_holds_while_the_units_are_set() {
+    // the same row of 2,000 gates and the clause over them, but now a unit
+    // switches the first gate off: the two million looks happen while the
+    // formula's own units are set, before any reading. The limit must be
+    // there from the first step
+    let fx = Fixture::new("num-root");
+    let cnf = fx.path("root.cnf");
+    let gate = |j: i64| 1 + j; // gates 2 ..= 2001; variable 1 is "t"
+    let count = 2000i64;
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for j in 2..=count {
+        cl.extend([vec![-gate(j), gate(j - 1)], vec![-gate(j), 1], vec![gate(j), -gate(j - 1), -1]]);
+    }
+    let mut long: Vec<i64> = (1..=count).map(gate).collect();
+    long.push(gate(count) + 1);
+    cl.push(long);
+    cl.push(vec![-gate(1)]);
+    write_cnf(&cnf, gate(count) + 1, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let full: u64 = report(&free.stdout)["work"].parse().unwrap();
+    assert!(full > 1_500_000, "the example no longer costs what this test is about: {}", full);
+    let cut = run(&cnf, &["--structnum=1", "--structnumticks=100"], &[]);
+    let r = report(&cut.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("stopped"), "{:?}", r);
+    let spent: u64 = r["work"].parse().unwrap();
+    assert!(spent <= 100_000 + 10_000, "the pass ran to {} with a limit of 100,000", spent);
+    assert_eq!(cut.status, free.status);
+}
