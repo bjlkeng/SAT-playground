@@ -58,8 +58,8 @@ class Prop:
                 self.cl.append(c)
                 self._push(self.watch, c[0], ci)
                 self._push(self.watch, c[1], ci)
-        if not self.root_conflict:
-            self.root_conflict = not self.assume(units)
+        if not self.root_conflict and not self.assume(units):
+            self.root_conflict = True
         self.root = len(self.trail)
 
     @staticmethod
@@ -89,7 +89,10 @@ class Prop:
 
     def assume(self, lits):
         """Set the literals and propagate.  False on a conflict; the trail
-        then holds what was set before it, and `undo` clears it."""
+        then holds what was set before it, and `undo` clears it.  A formula
+        that is refuted from the start is a conflict under any assumption."""
+        if self.root_conflict:
+            return False
         val, trail = self.val, self.trail
         head = len(trail)
         for l in lits:
@@ -151,6 +154,33 @@ class Prop:
                     trail.append(o)
             watch[fi] = keep
         return True
+
+    def add(self, clause):
+        """Add a clause while nothing is assumed (the trail holds root units
+        only).  False when the formula is refuted by it."""
+        if len(self.trail) != self.root:
+            raise RuntimeError("Prop.add: undo to the root first")
+        if self.root_conflict:
+            return False
+        c = [l for l in dict.fromkeys(clause)]
+        if any(-l in c for l in c) or any(self.value(l) == 1 for l in c):
+            return True
+        c = [l for l in c if self.value(l) == 0]
+        if not c:
+            self.root_conflict = True
+        elif len(c) == 1:
+            self.root_conflict = not self.assume(c)
+            self.root = len(self.trail)
+        elif len(c) == 2:
+            a, b = c
+            self._push(self.bins, -a, b)
+            self._push(self.bins, -b, a)
+        else:
+            ci = len(self.cl)
+            self.cl.append(c)
+            self._push(self.watch, c[0], ci)
+            self._push(self.watch, c[1], ci)
+        return not self.root_conflict
 
     def implied(self, lits):
         """The literals propagation adds when `lits` are set (with `lits`
@@ -227,11 +257,31 @@ def selftest():
     assert p.root == 2 and p.value(2) == 1 and p.value(-1) == -1 and p.value(3) == 0
     assert Prop(1, [()]).root_conflict and Prop(1, [(1,), (-1,)]).root_conflict
     assert Prop(1, [(1,), (-1,)]).refutes([])                   # refuted already: all is RUP
+    for dead in (Prop(2, [()]), Prop(2, [(1,), (-1,)]), Prop(2, [(1,), (-1, 2), (-2,)])):
+        # every question about a refuted formula says "conflict", with or without assumptions
+        assert dead.root_conflict and not dead.assume([]) and not dead.assume([2])
+        assert dead.implied([]) is None and dead.implied([2]) is None and dead.refutes([2])
+        assert satisfiable(dead) is None and satisfiable(dead, [2]) is None
     # a long clause moves its watches and still fires at the last literal
     p = Prop(6, [(1, 2, 3, 4, 5, 6)])
     assert p.implied([-1, -2, -3, -4, -5]) == [-1, -2, -3, -4, -5, 6]
     assert p.implied([-6, -5, -4, -3, -2]) == [-6, -5, -4, -3, -2, 1]
     assert p.implied([-1, -2, -3, -4, -5, -6]) is None
+    # clauses added later: a two-literal one, a long one, a unit that fires the
+    # rest, one that is already true, one that refutes the formula
+    p = Prop(5, [(1, 2)])
+    assert p.add((-2, 3)) and sorted(p.implied([-1])) == [-1, 2, 3]
+    assert p.add((-3, 4, 5)) and p.implied([-1, -4]) == [-1, -4, 2, 3, 5]
+    assert p.add((-1,)) and p.root == 3 and p.value(3) == 1 and p.implied([-4]) == [-4, 5]
+    assert p.add((2, 4)) and p.add((-2, -3, 4, 4)) and p.value(4) == 1 and p.root == 4
+    assert not p.add((-4,)) and p.root_conflict and p.refutes([])
+    try:
+        q = Prop(2, [(1, 2)])
+        q.assume([1])
+        q.add((2,))
+        raise AssertionError("a clause was added below an assumption")
+    except RuntimeError:
+        pass
     # propagation is not the whole truth: (1 or 2), (1 or -2) force 1, by a case
     # split and not by the rule
     p = Prop(2, [(1, 2), (1, -2)])

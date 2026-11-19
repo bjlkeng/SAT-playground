@@ -616,10 +616,15 @@ def structure_problems(rec):
     return bad
 
 
+GUARDS_TOGETHER = 12    # guards (form imp) whose tests may hold at once; all their combinations are tried
+
+
 def meaning_problems(rec, limit=25):
     """Brute force: the clauses say exactly what the record says.  Every legal
     joint value has a model, every other pattern of an input's variables has
-    none, and under each joint value every test is what its table says."""
+    none, and under each joint value every test is what its table says: a
+    two-way test has its table's value, a guard is off where its test fails,
+    and the guards whose tests hold can take every combination of values."""
     bad = structure_problems(rec)
     if bad:
         return bad
@@ -653,6 +658,15 @@ def meaning_problems(rec, limit=25):
                         bad.append(f"guard {t['name']} at joint value {i}: can be true where its test is false")
                 elif p.value(t["var"]) != 0 or satisfiable(p, [t["var"]]) is None or satisfiable(p, [-t["var"]]) is None:
                     bad.append(f"guard {t['name']} at joint value {i}: not free where its test is true")
+            # the guards whose tests hold here are free together, not only one by one
+            loose = [t["var"] for t in rec["tests"] if t["form"] == "imp" and t["table"][i] == "1"]
+            if 2 <= len(loose) <= GUARDS_TOGETHER:
+                for signs in itertools.product((1, -1), repeat=len(loose)):
+                    if satisfiable(p, [s * v for s, v in zip(signs, loose)]) is None:
+                        bad.append(f"joint value {i}: the guards {[s * v for s, v in zip(signs, loose)]} cannot be set together")
+                        break
+            elif len(loose) > GUARDS_TOGETHER:
+                bad.append(f"joint value {i}: {len(loose)} guards hold at once, more than this check tries together")
         p.undo(mark)
         if len(bad) >= limit:
             break
@@ -1015,6 +1029,16 @@ def selftest():
     assert (s["fwd_need"], s["fwd_up"], s["0_need"], s["0_up"], s["gap"]) == (2, 2, 2, 2, "none"), s
     guard["tests"][0]["form"] = "iff"
     assert any("can be" in b for b in meaning_problems(guard))
+    # two guards on one value, G -> x = 1 and H -> x >= 1: each is free by
+    # itself, and a clause that forbids both together must be noticed
+    two = copy.deepcopy(rec)
+    two["n_vars"] = 4
+    two["clauses"] = [[1, -2], [-3, 1], [-3, -2], [-4, 1]]
+    two["tests"] = [{"name": "G", "var": 3, "form": "imp", "what": "x = 1", "table": "010"},
+                    {"name": "H", "var": 4, "form": "imp", "what": "x >= 1", "table": "011"}]
+    assert meaning_problems(two) == [], meaning_problems(two)
+    two["clauses"].append([-3, -4])
+    assert any("cannot be set together" in b for b in meaning_problems(two)), meaning_problems(two)
     # a hard constraint: x <= y over two 2-valued numbers (bits 1 and 2), written
     # as "not (x and not y)"; and the same toy claiming every joint value
     hard = {"name": "hand2", "primitive": "hard", "options": ["hand"], "z3": "none", "n_vars": 2,
