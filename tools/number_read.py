@@ -211,7 +211,7 @@ def small_sat(clauses, limit=400):
 
 class Reading:
     def __init__(self, n_vars, clauses, budget=DEFAULT_BUDGET, full_scan=FULL_SCAN_VARS, pairs=True, partial="sample",
-                 short_limit=None, kinds=None):
+                 short_limit=None, kinds=None, proved_only=False, max_bits=MAX_VALUES - 1):
         """`partial`: True links every partial reader (a placement that needs
         three numbers; there can be a million); "sample" tries PARTIAL_SAMPLE
         of them after the full readers are linked and only counts what is
@@ -224,7 +224,10 @@ class Reading:
         `kinds`: the kinds of link to add (all when None).  A link of another
         kind is only counted: it is not given to propagation, so whether a
         later link is missing is judged against what is really added, and
-        `added` is, in order, a list a proof checker can follow."""
+        `added` is, in order, a list a proof checker can follow.
+        `proved_only`: a link with no short proof is counted and not added
+        (the solver's pass, src/structnum.rs, works this way: it adds only
+        what its proof can show).  `max_bits`: a longer chain is not read."""
         self.n_vars = n_vars
         self.budget = budget
         self.full_scan = full_scan
@@ -232,6 +235,8 @@ class Reading:
         self.want_partial = partial
         self.short_limit = short_limit
         self.kinds = None if kinds is None else set(kinds)
+        self.proved_only = proved_only
+        self.max_bits = max_bits
         self.added = []                # every clause given to propagation, in order: (clause, kind or "step")
         self.defs = {}
         self.p = Prop(n_vars, clauses)
@@ -655,7 +660,7 @@ class Reading:
     def _read(self, lits):
         """Set the chain to each value in turn and note what propagation sets."""
         num = Number(list(lits))
-        if num.n + 1 > MAX_VALUES:
+        if num.n > self.max_bits:
             self.notes["too_long"] += 1
             return num
         p = self.p
@@ -716,6 +721,8 @@ class Reading:
             if steps is None:
                 how = "hard"            # true (the patterns say so), and no short proof was found here
                 self.notes["unproved_" + kind] += 1
+                if self.proved_only:
+                    return how
             else:
                 self.steps_added += [(tuple(c), tuple(clause)) for c in steps]
                 how = f"steps:{len(steps)}"
@@ -961,7 +968,10 @@ def _open(path):
 
 def read_cnf(path, max_clauses=MAX_CLAUSES):
     """(variables in the header, clauses in the header, clauses, truncated).
-    Clauses are kept as written, empty ones too."""
+    Clauses are kept as written, empty ones too.  A file of the 2026 suite is
+    refused here, so no command reads one."""
+    if is_holdout(path):
+        sys.exit(f"{path}: the 2026 suite is the holdout, not read (plan section 8)")
     n_vars = n_cls = 0
     clauses, cur = [], []
     with _open(path) as f:
@@ -1623,6 +1633,16 @@ def selftest(a):
     assert is_holdout(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf.xz")
     assert not is_holdout(ROOT / "log" / "sorted-bits-2026-11-18" / "variants" / "x.cnf")
     assert not is_holdout(ROOT / "benchmarks" / "sat-comp-2025" / "x-2026.cnf")
+    # and every command that reads a file refuses one of the holdout, before opening it
+    for call in (lambda q: read_cnf(q), lambda q: read_file(q),
+                 lambda q: cmd_one(argparse.Namespace(file=q, budget=1, json="", all_partial=False)),
+                 lambda q: cmd_variant(argparse.Namespace(file=q, add="equal", out="/dev/null", budget=1, all_pairs=False)),
+                 lambda q: cmd_pyramid(argparse.Namespace(file=q, N=4, sample=1, seed=1, budget=1))):
+        try:
+            call(str(ROOT / "benchmarks" / "sat-comp-2026" / "no-such-file.cnf.xz"))
+            raise AssertionError("a holdout path was read")
+        except SystemExit as e:
+            assert "holdout" in str(e), e
     # the catalog, plain and renumbered with signs flipped
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import z3_catalog as zc
