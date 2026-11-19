@@ -661,3 +661,31 @@ fn a_long_list_of_two_literal_clauses_is_paid_as_it_is_walked() {
     }
     assert!(full > 1_300_000, "the example no longer costs what this test is about: {}", full);
 }
+
+#[test]
+fn a_long_clause_is_not_paid_without_room_for_its_scan() {
+    // one clause of 100,000 literals and a unit on a variable of its own (so
+    // that the pass walks the long clause again after loading it). The scan
+    // of the clause is one piece of work: with a limit that ends before it
+    // could be done, it is neither done nor paid (it used to be charged in
+    // full first: 1,600,033 units against a limit of 1,550,000)
+    let fx = Fixture::new("num-piece");
+    let cnf = fx.path("piece.cnf");
+    let n = 100_000i64;
+    let cl: Vec<Vec<i64>> = vec![(1..=n).collect(), vec![n + 1]];
+    write_cnf(&cnf, n + 1, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let full: u64 = report(&free.stdout)["work"].parse().unwrap();
+    let mut cut = 0;
+    for limit_k in (820u64..=(full / 1000 + 20)).step_by(10) {
+        let on = run(&cnf, &["--structnum=1", &format!("--structnumticks={}", limit_k)], &[]);
+        let r = report(&on.stdout);
+        let spent: u64 = r.get("work").map(|w| w.parse().unwrap()).unwrap_or(0);
+        // (the clock looks at the limit every 4,096 units: that much may be passed)
+        assert!(spent <= limit_k * 1000 + 4096, "limit {}K: the pass ran to {}", limit_k, spent);
+        if r.get("status").map(String::as_str) != Some("read") {
+            cut += 1;
+        }
+    }
+    assert!(cut >= 10, "the limits of this test never cut the pass: {} of them did (the whole pass costs {})", cut, full);
+}

@@ -15,9 +15,13 @@ A difference in one clause or in the order is a failure here.
 
 The reader is asked for exactly what the pass does: bits that no shape could
 define, linked by two-literal clauses (propagation is not asked for hidden
-links), no chain of two members, clauses only for numbers under a count, no
-pairs, no partial readers, the kinds equal, bound, dead and unit, and
-nothing without a short proof.
+links), no chain of two members, ends that many share not followed, a chain
+cut to the stretch its count reads, clauses only for numbers under a count
+(and none at all without one), no pairs, no partial readers, the kinds
+equal, bound, dead and unit, and nothing without a short proof.  The pass
+has allowances the reader has not (status=dense and status=partial on a
+formula with too many paths or too many candidates that are no numbers
+under a count): there the two are not compared.
 
   catalog [--solver BIN] [--jobs N] [--proof]
                                       every record of the Z3 catalog with a
@@ -28,6 +32,13 @@ nothing without a short proof.
                                       formulas on disk (plain or .xz)
 With --proof the pass's proof also goes to VeriPB: every step, and the
 derived clauses as the proof's output (tools/proof_gate.py, first stage).
+  pyramid [--solver BIN] [--sample N] FILE N
+                                      a Bel's Pyramid cell: the pass's
+                                      clauses against the puzzle's own
+                                      reader (tools/pyramid_read.py, which
+                                      knows the variable names).  Does a
+                                      placement set its label bits once the
+                                      pass's clauses are in?
   selftest [--solver BIN]             the toy above, and a pass that is
                                       made to differ (a stand-in solver)
 
@@ -214,6 +225,43 @@ def cmd_files(a):
     sys.exit(1 if bad else 0)
 
 
+def cmd_pyramid(a):
+    """The pass's clauses on one Bel's Pyramid cell, judged by the puzzle's own
+    reader.  A placement needs three labels at given values; the puzzle's
+    reader lists, for each placement, the label bits that follow from it.
+    Counted: how many of a sample of those propagation sets, before and with
+    the pass's clauses."""
+    import random
+    import pyramid_read as pr
+    from cnf_prop import Prop
+    n_vars, _n, clauses, truncated = nr.read_cnf(a.file)
+    if truncated:
+        sys.exit("too long")
+    with tempfile.TemporaryDirectory() as d:
+        src = a.file
+        if str(a.file).endswith(".xz"):
+            src = Path(d) / "f.cnf"
+            write_cnf(src, n_vars, clauses)
+        got, report = pass_clauses(a.solver, src, d)
+    pyr = pr.Reading([tuple(c) for c in clauses], a.N)
+    before, after = Prop(n_vars, clauses), Prop(n_vars, clauses)
+    for c in got:
+        after.add(list(c))
+    extra, _counts = pyr.implied({"fwd"})
+    rng = random.Random(1)
+    sample = extra if a.sample <= 0 or a.sample >= len(extra) else rng.sample(extra, a.sample)
+    hit0 = hit1 = 0
+    for neg_p, lit in sample:
+        g = before.implied([-neg_p])
+        hit0 += g is None or lit in g or before.value(lit) == 1
+        g = after.implied([-neg_p])
+        hit1 += g is None or lit in g or after.value(lit) == 1
+    wide = sum(1 for full in pyr.order.values() if len([l for l in full if after.value(l) == 0]) >= 2)
+    print(f"{Path(a.file).name.split('.')[0]}: the puzzle's reader: {len(pyr.order)} labels ({wide} with two or more open bits); "
+          f"the pass: status {report.get('status')}, {report.get('counted')} numbers under a count, {len(got)} clauses, work {report.get('work')}; "
+          f"a placement sets its label bit: {hit0} before, {hit1} of {len(sample)} with the pass's clauses")
+
+
 def cmd_selftest(a):
     cl = [[1, -2], [2, -3],
           [-7, 1, 2, 3], [7, -1], [7, -2], [7, -3],
@@ -281,6 +329,18 @@ def cmd_selftest(a):
         write_cnf(f2, 11, core)
         got2, rep2 = pass_clauses(a.solver, f2, d)
         assert compare("core", want2, got2, rep2) == "" and rep2["corecuts"] == "1", (got2, rep2)
+        # a literal written twice is one literal: "1 -2 -2 0" is the chain link "1 -2 0"
+        # for the reader as for the solver (review round 5: the reader went by raw width)
+        twice = [[1, -2, -2]] + [list(c) for c in cl[1:]]
+        want3, _r3 = reader_clauses(7, twice)
+        assert want3 == want, want3
+        f3 = Path(d) / "twice.cnf"
+        write_cnf(f3, 7, twice)
+        got3, rep3 = pass_clauses(a.solver, f3, d)
+        assert compare("twice", want3, got3, rep3) == "", (got3, rep3)
+        assert nr.normal_clauses([[1, -1, 2], [3, 3], [4, 5]]) == [[3], [4, 5]]
+        same = [[1, 2], [-1, 3]]
+        assert nr.normal_clauses(same) is same
         # a formula that its own units refute: both say nothing, and that is a match
         dead = Path(d) / "dead.cnf"
         write_cnf(dead, 1, [[1], [-1]])
@@ -299,10 +359,14 @@ def cmd_selftest(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("catalog", "files", "selftest"):
+    for name in ("catalog", "files", "pyramid", "selftest"):
         s = sub.add_parser(name)
         s.add_argument("--solver", default=str(SOLVER))
-        if name != "selftest":
+        if name == "pyramid":
+            s.add_argument("file")
+            s.add_argument("N", type=int, help="the pyramid's size: 4 for the bp4 cells, 5 for bp5")
+            s.add_argument("--sample", type=int, default=3000)
+        if name in ("catalog", "files"):
             s.add_argument("--proof", action="store_true", help="also give the pass's proof to VeriPB")
         if name == "catalog":
             s.add_argument("--catalog", default=str(ROOT / "benchmarks" / "rl" / "z3_catalog.jsonl.xz"))
@@ -310,7 +374,7 @@ def main(argv=None):
         if name == "files":
             s.add_argument("files", nargs="+")
     a = ap.parse_args(argv)
-    {"catalog": cmd_catalog, "files": cmd_files, "selftest": cmd_selftest}[a.cmd](a)
+    {"catalog": cmd_catalog, "files": cmd_files, "pyramid": cmd_pyramid, "selftest": cmd_selftest}[a.cmd](a)
 
 
 if __name__ == "__main__":

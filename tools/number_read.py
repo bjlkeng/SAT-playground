@@ -136,6 +136,24 @@ class Number:
         return [v for v in range(self.n + 1) if v not in self.dead]
 
 
+def normal_clauses(clauses):
+    """The clauses with repeated literals taken out and without the clauses
+    that hold a literal and its opposite.  The same list back when nothing
+    changes (the usual case: no copy of a big formula)."""
+    out = None
+    for i, c in enumerate(clauses):
+        d = c
+        if len(set(c)) != len(c):
+            d = list(dict.fromkeys(c))
+        s_ = set(d)
+        taut = any(-l in s_ for l in d)
+        if out is None and (taut or d is not c):
+            out = [list(x) for x in clauses[:i]]
+        if out is not None and not taut:
+            out.append(list(d))
+    return clauses if out is None else out
+
+
 def kind_of(tmask, fmask, values):
     """What a reader is, from where the patterns set it.  `values` are the
     live values, in order."""
@@ -265,6 +283,11 @@ class Reading:
         self.shaped_any = set()
         self.added = []                # every clause given to propagation, in order: (clause, kind or "step")
         self.defs = {}
+        # the clauses as the propagator and the solver take them: a literal
+        # written twice counts once, and a clause with a literal and its
+        # opposite says nothing.  ("1 -2 -2 0" is the two-literal clause
+        # "1 -2 0": by its raw width it would not be a link of a chain.)
+        clauses = normal_clauses(clauses)
         self.p = Prop(n_vars, clauses)
         self.numbers = []
         self.links = []                # (kind, clause, how): how is rup | steps:N | hard

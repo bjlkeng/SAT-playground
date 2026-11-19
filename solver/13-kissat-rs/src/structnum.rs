@@ -160,9 +160,15 @@ impl<'a> Clock<'a> {
         Clock { ticks, stop, base, budget, work: 0, looked: 0, over: false, soft: false, allow: u64::MAX }
     }
 
-    /// Count `n` units. True when the pass must end.
+    /// Pay `n` units for work that comes next. True when the pass must
+    /// end. A charge of a whole step or more is one piece of work (the scan
+    /// of a long clause, a sort, a table): it is paid only with room for
+    /// it, and without room it is neither paid nor done.
     #[inline]
     fn pay(&mut self, n: u64) -> bool {
+        if n >= Self::STEP && !self.room(n) {
+            return true;
+        }
         self.work += n;
         if self.work - self.looked >= Self::STEP {
             self.look()
@@ -1186,11 +1192,7 @@ fn scan(f: &Formula, val: &[i8], rooted: bool, clock: &mut Clock) -> Option<Scan
         }
     }
     for list in imp.iter_mut() {
-        let n = list.len() as u64;
-        if n >= Clock::STEP && !clock.room(n) {
-            return None;
-        }
-        pay!(n + 1);
+        pay!(list.len() + 1);
         list.sort_unstable();
         list.dedup();
     }
@@ -1274,20 +1276,19 @@ fn scan(f: &Formula, val: &[i8], rooted: bool, clock: &mut Clock) -> Option<Scan
                 continue;
             }
             // a wide clause whose every literal has many two-literal clauses
-            // costs up to its width squared here: every look is paid
-            let mut looks = 1u64;
+            // costs up to its width squared here: every look is paid as it
+            // is made
             let mut all = true;
             for &l in &keep {
                 if l == t {
                     continue;
                 }
-                looks += 1;
+                pay!(1);
                 if back.binary_search(&-l).is_err() {
                     all = false;
                     break;
                 }
             }
-            pay!(looks);
             if all {
                 let out = cls(t);
                 let mut ins: Vec<u32> = keep.iter().filter(|&&l| l != t).map(|&l| cls(l)).filter(|&w| w != out).collect();
@@ -1498,9 +1499,10 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
         state.insert(root, 1);
         while let Some(&mut (x, ref mut at)) = stack.last_mut() {
             let kids = direct.get(&x).unwrap_or(&empty);
-            let before = *at;
             let mut next: Option<i32> = None;
+            pay!(1);
             while *at < kids.len() {
+                pay!(1);
                 let w = kids[*at];
                 *at += 1;
                 if height.contains_key(&w) || state.get(&w) == Some(&1) {
@@ -1509,7 +1511,6 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
                 next = Some(w);
                 break;
             }
-            pay!(1 + *at - before);
             match next {
                 Some(w) => {
                     state.insert(w, 1);
@@ -1564,12 +1565,14 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
             out.push(lits);
         }
     };
-    // a member's successors that are not on the path, tallest first, and what finding them cost
-    let sorted_kids = |x: i32, on: &HashSet<i32>| -> (Vec<i32>, u64) {
+    // a member's successors that are not on the path, tallest first; what
+    // finding them costs is paid before (`kids_cost`)
+    let kids_cost = |x: i32| -> u64 { 1 + direct.get(&x).map_or(0, |d| d.len()) as u64 };
+    let sorted_kids = |x: i32, on: &HashSet<i32>| -> Vec<i32> {
         let all = direct.get(&x).unwrap_or(&empty);
         let mut nxt: Vec<i32> = all.iter().copied().filter(|w| !on.contains(w)).collect();
         nxt.sort_unstable_by_key(|&w| (std::cmp::Reverse(h_of(w)), var(w), w));
-        (nxt, 1 + all.len() as u64)
+        nxt
     };
     let mut sources: Vec<i32> = direct.keys().copied().filter(|u| pred.get(u).map_or(true, |p| p.is_empty())).collect();
     pay!(2 * sources.len());
@@ -1583,8 +1586,8 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
             let mut path: Vec<i32> = vec![src];
             let mut on: HashSet<i32> = HashSet::new();
             on.insert(src);
-            let (first, cost) = sorted_kids(src, &on);
-            pay!(cost);
+            pay!(kids_cost(src));
+            let first = sorted_kids(src, &on);
             let mut stack: Vec<(Vec<i32>, usize)> = vec![(first, 0)];
             while let Some((kids, at)) = stack.last_mut() {
                 pay!(1);
@@ -1603,8 +1606,8 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
                     *at += 1;
                     path.push(w);
                     on.insert(w);
-                    let (next, cost) = sorted_kids(w, &on);
-                    pay!(cost);
+                    pay!(kids_cost(w));
+                    let next = sorted_kids(w, &on);
                     stack.push((next, 0));
                 } else {
                     stack.pop();
