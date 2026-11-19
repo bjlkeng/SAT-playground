@@ -9028,6 +9028,61 @@ writes them into the placements, and no variable stands for "the label is
 **Tools.** `tools/number_read.py` (`one`, `variant`, `census`, `pyramid`,
 `selftest`), `tools/cnf_prop.py`.
 
+### The number pass in the solver (2026-11-19; bead `SAT-playground-d96.9.4`; off by default)
+
+**What it does.** `--structnum=1` runs the reader above inside the solver, as
+a pass of the structure stage (`src/structnum.rs`), before the search. It
+adds what the encoding lacks: units and two-literal clauses only, each true
+in every model of the input, each a `rup` line of the stage's VeriPB proof.
+`--structnumticks` (in thousands, 2,000,000 by default) is its work limit.
+Nothing runs with the option off.
+
+**The same example.** The toy of the reader (x in 0..3 as three sorted bits,
+a count with three helpers): the pass writes "h2 -> g2", "g2 -> h2", "not h3
+-> not g3" and "h1 -> g1" to the proof and hands them to the search with the
+formula. A formula that is refuted with them (the toy with "x = 2" and
+"x >= 3" both forced) passes the gate: VeriPB takes the four lines, drat-trim
+the search's proof on the formula plus the four clauses.
+
+**What it leaves out, against the Python reader.** Chains of fewer than
+three members (a formula without gates has thousands: two variables and one
+clause between them); chains past 62 bits; the three-literal `hole` clauses;
+pairs of numbers; the partial readers one by one; and any clause it cannot
+prove in a few steps (the reader lists those as true and unproved; the pass
+adds only what its proof shows). It does not ask propagation for hidden
+links between bits, so the adder setting of the catalog is read as far as
+the two-literal clauses go.
+
+**Held to the reader, clause for clause** (`tools/number_pass_check.py`: the
+reader is asked for exactly what the pass does, and the two lists are
+compared in order).
+- The catalog, as written and renumbered twice with signs flipped: 693
+  readings, 23,606 added clauses (1,062 of them proof steps), no difference;
+  and VeriPB accepts the pass's proof on every one (`catalog --proof`).
+- Three pyramid cells (`log/sorted-bits-2026-11-18/pass-check-bp.txt`):
+
+| cell | clauses the pass adds | the reader | work of the pass | the solver's work in a run of that cell |
+|---|---|---|---|---|
+| `bp4_CSO_IXA_ZR` | 3,164 (all `equal`) | the same | 114M | 3.8G to 54.7G |
+| `bp4_AM_IXA_FPBLE` | 4,754 (4,647 `equal`, 60 `unit`, 30 `dead`, 5 `bound`, 12 proof steps) | the same | 101M | 24.1G to 37.0G |
+| `bp5_CSO` | 12,685 (all `equal`) | the same | 610M | 6.1G to 18.5G |
+
+  Putting the two side by side found a fault in the reader, not in the pass:
+  a bit that an earlier clause of the same reading had fixed stayed in the
+  chain (fixed in the reader).
+- `tests/structnum.rs` (6 tests): the toy's four clauses in the reader's
+  order; two refuted toys through the gate, and a changed proof step and a
+  changed derived clause both rejected; a dead value becomes a clause; off by
+  default, with no trace; pigeons unchanged counter for counter, the pass's
+  own work aside; the work limit holds inside the widest loop (a hundred
+  copies of a 100-literal clause: 100,000 against 2.06M unlimited); a chain
+  of 64 bits is left alone.
+
+**Limits kept** (`CONVENTIONS.md`, structure passes): the pass starts only
+with room to build its propagator, polls its limit and the stop flag inside
+every loop, and writes its work to the clock at every poll, so a run that a
+signal ends in the middle reports it.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

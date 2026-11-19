@@ -60,7 +60,10 @@ Commands:
                                  the file plus the chosen links
   census --out TABLE.tsv FILES_OR_FOLDERS... [--workers N] [--seconds S] [--mem-mb M]
                                  one row a file; a table that is there is
-                                 added to, not redone
+                                 added to, not redone.  With --solver BIN the
+                                 solver's own number pass reads each file
+                                 (seconds, not minutes) and the row is its
+                                 report line
   report TABLE...                the census tables family by family (GBD's
                                  family and author from benchmarks/rl)
   pyramid FILE N                 this reader against tools/pyramid_read.py on
@@ -1166,6 +1169,47 @@ def _census_one(job):
 
 
 HOLDOUT = ROOT / "benchmarks" / "sat-comp-2026"
+SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
+# the solver with every other pass and engine off: the number pass alone reads
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0",
+         "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0", "--ctlsplit=0"]
+# the census by the solver's own pass (src/structnum.rs): its report line, field for field
+SOLVER_COLUMNS = ["stem", "seconds", "status", "numbers", "values", "counted", "added", "equal", "bound", "dead", "unit",
+                  "steps", "there", "noproof", "holes", "partial", "candidates", "free", "gates", "ring", "notbit", "ends",
+                  "long", "manypaths", "work", "error"]
+
+
+def solver_row(job):
+    """One file through the solver's number pass (--structnum=1, the search
+    stopped at once): the pass's report line as a row."""
+    path, solver, seconds, mem_mb = job
+    import resource
+    import subprocess
+    stem = _stem(path)
+    if is_holdout(path):
+        return {"stem": stem, "error": "holdout"}
+
+    def limit():
+        if mem_mb:
+            resource.setrlimit(resource.RLIMIT_AS, (mem_mb << 20, mem_mb << 20))
+
+    t0 = time.time()
+    try:
+        p = subprocess.run([str(solver), "-n", *STOCK, "--structnum=1", "--conflicts=0", str(path)],
+                           capture_output=True, text=True, timeout=seconds, preexec_fn=limit)
+    except subprocess.TimeoutExpired:
+        return {"stem": stem, "seconds": f"{time.time() - t0:.1f}", "error": "time"}
+    row = {"stem": stem, "seconds": f"{time.time() - t0:.1f}", "error": ""}
+    lines = [l for l in p.stdout.splitlines() if l.startswith("c numbers ")]
+    if len(lines) != 1:
+        off = [l for l in p.stdout.splitlines() if l.startswith("c structure pass off")]
+        row["error"] = "too many clauses for the structure pass" if off else f"no report line (exit {p.returncode})"
+        return row
+    for kv in lines[0].split()[2:]:
+        k, _eq, v = kv.partition("=")
+        if k in SOLVER_COLUMNS:
+            row[k] = v
+    return row
 
 
 def is_holdout(path):
@@ -1186,13 +1230,14 @@ def cmd_census(a):
         files += sorted(pth.glob("*.cnf*")) if pth.is_dir() else [pth]
     if any(is_holdout(f) for f in files):
         sys.exit("the 2026 suite is the holdout: not read (plan section 8)")
+    columns = SOLVER_COLUMNS if a.solver else COLUMNS
     out = Path(a.out)
     done = {}
     new_file = not out.exists() or out.stat().st_size == 0     # a run stopped before its first row leaves an empty file
     if not new_file:
         with open(out, newline="") as fh:
             reader = csv.DictReader(fh, delimiter="\t")
-            if reader.fieldnames != COLUMNS:
+            if reader.fieldnames != columns:
                 sys.exit(f"{out}: not a table of this census (other columns); give another --out")
             for r in reader:
                 done[r["stem"]] = r
@@ -1200,13 +1245,18 @@ def cmd_census(a):
     print(f"{len(files)} files, {len(done)} already in {out}, {len(todo)} to read", flush=True)
     import multiprocessing
     with open(out, "a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=COLUMNS, delimiter="\t", lineterminator="\n", restval="")
+        w = csv.DictWriter(fh, fieldnames=columns, delimiter="\t", lineterminator="\n", restval="")
         if new_file:
             w.writeheader()
             fh.flush()
-        jobs = [(str(f), a.budget, a.seconds, a.mem_mb, a.max_clauses) for f in todo]
+        if a.solver:
+            jobs = [(str(f), a.solver, a.seconds, a.mem_mb) for f in todo]
+            worker = solver_row
+        else:
+            jobs = [(str(f), a.budget, a.seconds, a.mem_mb, a.max_clauses) for f in todo]
+            worker = _census_one
         with multiprocessing.get_context("fork").Pool(a.workers, maxtasksperchild=1) as pool:
-            for n, row in enumerate(pool.imap_unordered(_census_one, jobs), 1):
+            for n, row in enumerate(pool.imap_unordered(worker, jobs), 1):
                 w.writerow(row)
                 fh.flush()
                 if n % 20 == 0 or n == len(jobs):
@@ -1216,7 +1266,8 @@ def cmd_census(a):
 
 def cmd_report(a):
     """The census tables, family by family: which cells carry numbers under a
-    count, and how many clauses the encoding lacks there."""
+    count, and how many clauses the encoding lacks there.  Reads the tables
+    of this tool's own census and of the solver's (census --solver)."""
     fam, author = {}, {}
     f = ROOT / "benchmarks" / "rl" / "families.tsv"
     if f.exists():
@@ -1234,16 +1285,24 @@ def cmd_report(a):
         with open(t, newline="") as fh:
             rows += list(csv.DictReader(fh, delimiter="\t"))
     num = lambda r, k: int(r[k]) if r.get(k, "") not in ("", None) else 0
-    print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; "
-          f"stopped at the budget: {sum(1 for r in rows if r.get('stopped'))}; cut short: {sum(num(r, 'cut_short') for r in rows)}")
+    # the two table kinds name things a little differently
+    links = lambda r: num(r, "counted_links") if "counted_links" in r else num(r, "added")
+    all_links = lambda r: num(r, "links") if "links" in r else num(r, "added")
+    values = lambda r: (r.get("counted_values") if "counted_values" in r else r.get("values", "")) or ""
+    stopped = sum(1 for r in rows if r.get("stopped") or r.get("status") in ("stopped", "no-budget"))
+    print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; stopped at the limit: {stopped}")
     read = [r for r in rows if not r["error"]]
     print(f"read: {len(read)}; with a chain: {sum(1 for r in read if num(r, 'numbers'))}; with a number under a count: "
-          f"{sum(1 for r in read if num(r, 'counted'))}; with clauses to add for those: {sum(1 for r in read if num(r, 'counted_links'))}")
+          f"{sum(1 for r in read if num(r, 'counted'))}; with clauses to add: {sum(1 for r in read if all_links(r))}")
+    if any("work" in r for r in read):
+        works = sorted(num(r, "work") for r in read if r.get("work"))
+        if works:
+            print(f"work of the pass: sum {sum(works) / 1e9:.2f}G, median {works[len(works) // 2] / 1e6:.2f}M, largest {works[-1] / 1e6:.0f}M")
     by = defaultdict(list)
     for r in read:
         h = r["stem"].split("-")[0]
         by[(fam.get(h, "?"), author.get(h, ""))].append(r)
-    print("\nfamily\tauthor\tcells\twith_counted\tcounted_numbers\tvalues\tcounted_links\tall_links\texample")
+    print("\nfamily\tauthor\tcells\twith_counted\tcounted_numbers\tvalues\tclauses_to_add\texample")
     out = []
     for (fm, au), rs in by.items():
         hit = [r for r in rs if num(r, "counted") >= a.min_numbers]
@@ -1251,14 +1310,13 @@ def cmd_report(a):
             continue
         vals = Counter()
         for r in hit:
-            for part in r["counted_values"].split():
+            for part in values(r).replace(",", " ").split():
                 v, c = part.split("x")
                 vals[int(v)] += int(c)
-        out.append((-sum(num(r, "counted_links") for r in hit), fm, au, len(rs), len(hit), sum(num(r, "counted") for r in hit),
-                    " ".join(f"{v}x{c}" for v, c in sorted(vals.items())[:8]), sum(num(r, "links") for r in hit),
-                    hit[0]["stem"].split("-", 1)[-1][:40]))
-    for neg, fm, au, n, h, cn, vals, al, ex in sorted(out):
-        print(f"{fm}\t{au}\t{n}\t{h}\t{cn}\t{vals}\t{-neg}\t{al}\t{ex}")
+        out.append((-sum(links(r) for r in hit), fm, au, len(rs), len(hit), sum(num(r, "counted") for r in hit),
+                    " ".join(f"{v}x{c}" for v, c in sorted(vals.items())[:8]), hit[0]["stem"].split("-", 1)[-1][:40]))
+    for neg, fm, au, n, h, cn, vals, ex in sorted(out):
+        print(f"{fm}\t{au}\t{n}\t{h}\t{cn}\t{vals}\t{-neg}\t{ex}")
 
 
 def cmd_pyramid(a):
@@ -1616,7 +1674,7 @@ def selftest(a):
         table = Path(d) / "census.tsv"
         table.write_text("")
         args = argparse.Namespace(files=[str(ex)], out=str(table), workers=1, budget=DEFAULT_BUDGET, seconds=120, mem_mb=0,
-                                  max_clauses=MAX_CLAUSES)
+                                  max_clauses=MAX_CLAUSES, solver="")
         import contextlib
         import io
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1625,6 +1683,32 @@ def selftest(a):
         with open(table, newline="") as fh:
             got_rows = list(csv.DictReader(fh, delimiter="\t"))
         assert len(got_rows) == 1 and got_rows[0]["stem"] == "ex" and got_rows[0]["numbers"] == "1" and got_rows[0]["links"] == "4", got_rows
+        # the census by the solver's pass: a stand-in that prints the report
+        # line, one that prints none, and a table of the other kind refused
+        fake = Path(d) / "fake.sh"
+        fake.write_text("#!/bin/sh\necho 'c numbers status=read numbers=2 values=4x1,7x1 counted=1 added=5 equal=4 work=77'\n")
+        fake.chmod(0o755)
+        st = Path(d) / "solver.tsv"
+        sargs = argparse.Namespace(files=[str(ex)], out=str(st), workers=1, budget=0, seconds=60, mem_mb=0, max_clauses=0, solver=str(fake))
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_census(sargs)
+        with open(st, newline="") as fh:
+            srows = list(csv.DictReader(fh, delimiter="\t"))
+        assert len(srows) == 1 and srows[0]["counted"] == "1" and srows[0]["values"] == "4x1,7x1" and srows[0]["work"] == "77", srows
+        fake.write_text("#!/bin/sh\necho 's UNKNOWN'\n")
+        assert "no report line" in solver_row((str(ex), str(fake), 60, 0))["error"]
+        assert solver_row((str(ROOT / "benchmarks" / "sat-comp-2026" / "x.cnf"), str(fake), 60, 0))["error"] == "holdout"
+        sargs.out = str(table)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cmd_census(sargs)
+            raise AssertionError("a table of the other census was added to")
+        except SystemExit as e:
+            assert "other columns" in str(e)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cmd_report(argparse.Namespace(tables=[str(st), str(table)], min_numbers=1))
+        assert "2 files" in buf.getvalue() and "with a number under a count: 2" in buf.getvalue(), buf.getvalue()
         other = Path(d) / "other.tsv"
         other.write_text("a\tb\n1\t2\n")
         args.out = str(other)
@@ -1729,6 +1813,8 @@ def main(argv=None):
     c.add_argument("--seconds", type=int, default=3600)
     c.add_argument("--mem-mb", type=int, default=16000)
     c.add_argument("--max-clauses", type=int, default=MAX_CLAUSES)
+    c.add_argument("--solver", default="", help="read with the solver's own number pass (this binary) instead of this tool: "
+                   "seconds a file, not minutes; the table then has the pass's report fields")
     rp = sub.add_parser("report")
     rp.add_argument("tables", nargs="+")
     rp.add_argument("--min-numbers", type=int, default=1, help="list a family when a cell has this many numbers under a count")

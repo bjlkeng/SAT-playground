@@ -1415,6 +1415,7 @@ fn solver_equivalence(clauses: &[Vec<i32>], a: i32, b: i32, conflicts: u32, tick
             ("structcount", 0),
             ("structcsp", 0),
             ("structdd", 0),
+            ("structnum", 0),
             ("structarith", 0),
             ("structsort", 0),
             ("structdiv", 0),

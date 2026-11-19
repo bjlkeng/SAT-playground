@@ -957,6 +957,7 @@ fn new_sub() -> Box<crate::internal::Solver> {
         ("structcount", 0),
         ("structcsp", 0),
         ("structdd", 0),
+        ("structnum", 0),
         ("structarith", 0),
         ("structsort", 0),
         ("structdiv", 0),

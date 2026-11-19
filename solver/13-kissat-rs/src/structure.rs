@@ -97,7 +97,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.freeread != 0 || o.freewalk != 0
+    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.structnum != 0 || o.freeread != 0 || o.freewalk != 0
 }
 
 /// The free-choice reading runs (for its report or for the walk).
@@ -494,6 +494,16 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             // without the structure it would spend whatever it is given
             let own = cap((solver.options.structcountticks as u64).saturating_mul(1000), solver);
             crate::structcount::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
+        }
+        if solver.options.structnum != 0 && !derived.refuted {
+            // the number pass (src/structnum.rs), after every pass that
+            // derives clauses: its clauses follow from the input alone and
+            // each is a rup step, so whatever the earlier passes added only
+            // helps the checker; and a symmetry pass after it would have to
+            // map its clauses. With a limit of its own from where the
+            // earlier passes stopped
+            let own = cap((solver.options.structnumticks as u64).saturating_mul(1000), solver);
+            crate::structnum::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
         }
         if solver.options.gauss != 0 && !derived.refuted {
             // the parity engine's XOR constraints (src/gauss.rs), read

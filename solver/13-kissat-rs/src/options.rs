@@ -395,6 +395,14 @@ kissat_options! {
     (structdivassume, 1, 0, 1, "structure pass: the divider's pairs as questions to one solver"),
     (structdivticks, 50_000_000, 0, i32::MAX, "structure pass: divider work limit (K)"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
+    // the number pass (epic SAT-playground-d96.9, bead d96.9.4,
+    // src/structnum.rs): numbers stored as sorted bits; a count over them
+    // only gives the bits back, and the pass adds the two-literal clauses
+    // that say so. Off by default: measured first, and nothing of the epic
+    // goes on without the owner's word (bead d96.9.7). structnumticks is
+    // its own work limit, counted from where the earlier passes stopped
+    (structnum, 0, 0, 1, "structure pass: numbers stored as sorted bits"),
+    (structnumticks, 2_000_000, 0, i32::MAX, "structure pass: number work limit (K)"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
     // the point step (bead SAT-playground-1v2.3.4, 2026-11-05): the lines
     // between interchangeable points (the Ramsey cells) get one lex-leader
@@ -903,8 +911,9 @@ mod tests {
         // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
-        // assumptions), and structdivassume (2026-11-18)
-        assert_eq!(OPTION_TABLE.len(), 158 + 74);
+        // assumptions), structdivassume (2026-11-18), and structnum,
+        // structnumticks (2026-11-19)
+        assert_eq!(OPTION_TABLE.len(), 158 + 76);
     }
 
     #[test]

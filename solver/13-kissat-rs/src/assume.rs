@@ -619,7 +619,7 @@ pub fn parse_inccnf(bytes: &[u8]) -> Result<Inccnf, String> {
 pub fn inccnf_options(solver: &mut Solver) {
     let mut turned_off: Vec<&str> = Vec::new();
     for name in [
-        "structsym", "structsymext", "structpoints", "structparity", "structcount", "structcsp", "structdd",
+        "structsym", "structsymext", "structpoints", "structparity", "structcount", "structcsp", "structdd", "structnum",
         "structarith", "structsort", "structdiv", "gauss", "card", "freewalk", "freeread", "ctlfirst", "ctlsplit",
     ] {
         if crate::internal::get_option(solver, name) != 0 {
