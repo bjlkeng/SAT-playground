@@ -689,3 +689,48 @@ fn a_long_clause_is_not_paid_without_room_for_its_scan() {
     }
     assert!(cut >= 10, "the limits of this test never cut the pass: {} of them did (the whole pass costs {})", cut, full);
 }
+
+#[test]
+fn a_number_with_thousands_of_readers_is_paid_for_at_every_step() {
+    // the toy and 3,000 more helpers, each "g1 or g2" again (for sorted bits
+    // that is g1). Every one is a reader of the number and gets its clause
+    // "helper -> g1". The tables that hold the readers (for the choice
+    // between chains, for the linking) are paid before they are made: under
+    // any limit the pass ends within it, and a run that says "read" has
+    // written every clause. (Linking costs a propagation a reader, and each
+    // propagation here sets every reader: with 100,000 of them the pass ends
+    // at its 2G limit after 1,527 clauses.)
+    let fx = Fixture::new("num-readers");
+    let cnf = fx.path("readers.cnf");
+    let extra = 3_000i64;
+    let mut cl = toy();
+    for k in 0..extra {
+        let h = 8 + k;
+        cl.extend([vec![-h, 1, 2], vec![h, -1], vec![h, -2]]);
+    }
+    write_cnf(&cnf, 7 + extra, &cl);
+    let free = run(&cnf, &["--structnum=1"], &[]);
+    let whole = report(&free.stdout);
+    assert_eq!(whole.get("status").map(String::as_str), Some("read"), "{:?}", whole);
+    let all: u64 = whole["added"].parse().unwrap();
+    assert!(all >= extra as u64 + 4, "{:?}", whole);
+    let full: u64 = whole["work"].parse().unwrap();
+    let step = (full / 1000 / 40).max(1);
+    let mut cut = 0;
+    let mut limit_k = step;
+    while limit_k * 1000 < full + 2 * step * 1000 {
+        let on = run(&cnf, &["--structnum=1", &format!("--structnumticks={}", limit_k)], &[]);
+        let r = report(&on.stdout);
+        let spent: u64 = r.get("work").map(|w| w.parse().unwrap()).unwrap_or(0);
+        // (the clock looks every 4,096 units; the clauses found are written, and that is paid, after the limit too)
+        let written: u64 = r.get("added").map(|w| w.parse().unwrap()).unwrap_or(0);
+        assert!(spent <= limit_k * 1000 + 4096 + 3 * written, "limit {}K: the pass ran to {} ({} clauses written)", limit_k, spent, written);
+        if r.get("status").map(String::as_str) == Some("read") {
+            assert_eq!(written, all, "limit {}K: {:?}", limit_k, r);
+        } else {
+            cut += 1;
+        }
+        limit_k += step;
+    }
+    assert!(cut >= 20, "the limits of this test never cut the pass: {} of them did (the whole pass costs {})", cut, full);
+}

@@ -177,6 +177,12 @@ impl<'a> Clock<'a> {
         }
     }
 
+    /// Count work that is done whatever the limits say (the pass's last
+    /// step: writing the clauses it found).
+    fn spend(&mut self, n: u64) {
+        self.work += n;
+    }
+
     /// Write the clock and look at the limit, the stop flag and the
     /// allowance.
     fn look(&mut self) -> bool {
@@ -767,6 +773,7 @@ impl<'a> Reader<'a> {
     fn flush(&mut self) -> u64 {
         let mut written = 0u64;
         for clause in std::mem::take(&mut self.found) {
+            self.p.clock.spend(1 + clause.len() as u64);
             let mut id = 0;
             if let Some(w) = self.derived.proof.as_mut() {
                 match w.rup(&clause) {
@@ -1024,14 +1031,18 @@ impl<'a> Reader<'a> {
 
     // -------------------------------------------------------------------
     fn link_numbers(&mut self) {
-        // (rank, number index, variable, on at, off at, kind)
-        let mut todo: Vec<(u8, usize, u32, u64, u64, Kind)> = Vec::new();
+        // (number index, variable, on at, off at, kind): the readers that
+        // get clauses. The thresholds of every number come first, then the
+        // other variables that every value sets; a partial reader gets none
+        // and is only counted
+        let mut thresholds: Vec<(usize, u32, u64, u64, Kind)> = Vec::new();
+        let mut others: Vec<(usize, u32, u64, u64, Kind)> = Vec::new();
+        let mut partial = 0u64;
         let numbers = std::mem::take(&mut self.numbers);
         for (i, num) in numbers.iter().enumerate() {
+            // (every number here is under a count: no other chain gets this far)
             let live = num.live();
-            // only an integer under a count gets clauses: every step between
-            // its values, but one at most, has a variable equal to it
-            if live.len() < 2 || !is_counted(num) {
+            if live.len() < 2 {
                 continue;
             }
             let n = num.n();
@@ -1048,30 +1059,24 @@ impl<'a> Reader<'a> {
                 };
                 self.add(LinkKind::Dead, &clause, Some(num));
             }
-            // the sort of its readers is one piece of work: done only with room for it
-            if !self.p.clock.room(num.readers.len() as u64) {
+            // its readers, sorted and told apart: one piece of work, paid before it is done
+            if self.p.clock.pay(1 + 3 * num.readers.len() as u64) {
                 self.halt = true;
                 break;
             }
-            self.p.clock.pay(num.readers.len() as u64);
             let mut vars: Vec<u32> = num.readers.keys().copied().collect();
             vars.sort_unstable();
             for w in vars {
                 let (t, f) = num.readers[&w];
-                let k = kind_of(t, f, &live);
-                let rank = match k {
-                    Kind::Ge | Kind::Le => 0,
-                    Kind::Partial => 2,
-                    _ => 1,
-                };
-                todo.push((rank, i, w, t, f, k));
+                match kind_of(t, f, &live) {
+                    k @ (Kind::Ge | Kind::Le) => thresholds.push((i, w, t, f, k)),
+                    Kind::Partial => partial += 1,
+                    k => others.push((i, w, t, f, k)),
+                }
             }
         }
-        for rank in 0..2u8 {
-            for &(r, i, w, t, f, k) in &todo {
-                if r != rank {
-                    continue;
-                }
+        for (rank, list) in [(0u8, &thresholds), (1u8, &others)] {
+            for &(i, w, t, f, k) in list {
                 if self.spent() {
                     break;
                 }
@@ -1107,7 +1112,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        self.counts.partial = todo.iter().filter(|x| x.0 == 2).count() as u64;
+        self.counts.partial = partial;
         self.numbers = numbers;
     }
 }
@@ -1574,6 +1579,7 @@ fn candidates(direct: &HashMap<i32, Vec<i32>>, pred: &HashMap<i32, Vec<i32>>, al
         nxt.sort_unstable_by_key(|&w| (std::cmp::Reverse(h_of(w)), var(w), w));
         nxt
     };
+    pay!(direct.len());
     let mut sources: Vec<i32> = direct.keys().copied().filter(|u| pred.get(u).map_or(true, |p| p.is_empty())).collect();
     pay!(2 * sources.len());
     sources.sort_unstable_by_key(|&u| (std::cmp::Reverse(h_of(u)), var(u), u));
@@ -1857,31 +1863,47 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     }
     rd.counts.candidates = tested;
     if !rd.spent() {
-        // who reads whom
-        let full: Vec<HashSet<u32>> = seen
-            .iter()
-            .map(|num| {
-                let live = num.live();
-                num.readers.iter().filter(|(_w, &(t, f))| !matches!(kind_of(t, f, &live), Kind::Partial | Kind::Constant)).map(|(&w, _)| w).collect()
-            })
-            .collect();
-        let members: Vec<HashSet<u32>> = seen.iter().map(|num| num.lits.iter().map(|&l| var(l)).collect()).collect();
-        let mut by_var: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (i, m) in members.iter().enumerate() {
-            for &v in m {
-                by_var.entry(v).or_default().push(i);
+        // who reads whom. Every table of the choice is paid before it is
+        // made, a number at a time
+        let mut full: Vec<HashSet<u32>> = Vec::with_capacity(seen.len());
+        let mut members: Vec<HashSet<u32>> = Vec::with_capacity(seen.len());
+        for num in &seen {
+            if rd.p.clock.pay(1 + num.readers.len() as u64 + 2 * num.lits.len() as u64) {
+                rd.halt = true;
+                break;
             }
+            let live = num.live();
+            full.push(num.readers.iter().filter(|(_w, &(t, f))| !matches!(kind_of(t, f, &live), Kind::Partial | Kind::Constant)).map(|(&w, _)| w).collect());
+            members.push(num.lits.iter().map(|&l| var(l)).collect());
         }
-        let mut order: Vec<usize> = (0..seen.len()).collect();
-        order.sort_by_key(|&i| rank_key(&seen[i].lits));
+        let mut by_var: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut order: Vec<usize> = Vec::new();
+        // the two sorts below compare chains, a member at a time
+        let longest = seen.iter().map(|num| num.lits.len()).max().unwrap_or(0) as u64;
+        let sorting = (seen.len() as u64).saturating_mul(1 + longest).saturating_mul(2 * (64 - (seen.len() as u64).leading_zeros() as u64 + 1));
+        if !rd.halt && rd.p.clock.pay(sorting) {
+            rd.halt = true;
+        }
+        if !rd.halt {
+            for (i, num) in seen.iter().enumerate() {
+                for &l in &num.lits {
+                    by_var.entry(var(l)).or_default().push(i);
+                }
+            }
+            order = (0..seen.len()).collect();
+            order.sort_by_cached_key(|&i| rank_key(&seen[i].lits));
+        }
         let covers = |a: usize, t: usize| -> bool { members[t].iter().all(|v| full[a].contains(v) || members[a].contains(v)) };
         // The chains that could hold t as a function hold or read its first
         // member. Which chains read a variable is looked up, not searched:
         // with every candidate tried against every other, 57,000 candidates
         // (a timetable) would be three billion looks
-        let firsts: HashSet<u32> = seen.iter().map(|num| var(num.lits[0])).collect();
+        let firsts: HashSet<u32> = if rd.halt { HashSet::new() } else { seen.iter().map(|num| var(num.lits[0])).collect() };
         let mut read_by: HashMap<u32, Vec<usize>> = HashMap::new();
         for (a, readers) in full.iter().enumerate() {
+            if rd.halt {
+                break;
+            }
             if rd.p.clock.pay(1 + readers.len() as u64) {
                 rd.halt = true;
                 break;
@@ -1926,21 +1948,28 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
             }
         }
         // two chains that still share a bit are two readings of one number
-        chosen.sort_by_key(|&t| (std::cmp::Reverse(full[t].len()), std::cmp::Reverse(seen[t].lits.len()), seen[t].lits.iter().map(|&l| var(l)).min().unwrap(), seen[t].lits.clone()));
-        let mut taken: HashSet<u32> = HashSet::new();
+        // (the sort was paid above, with the first one)
         let mut last: Vec<usize> = Vec::new();
-        for t in chosen {
-            if members[t].iter().any(|v| taken.contains(v)) {
-                continue;
+        if !rd.halt {
+            chosen.sort_by_cached_key(|&t| (std::cmp::Reverse(full[t].len()), std::cmp::Reverse(seen[t].lits.len()), seen[t].lits.iter().map(|&l| var(l)).min().unwrap(), seen[t].lits.clone()));
+            let mut taken: HashSet<u32> = HashSet::new();
+            for t in chosen {
+                if members[t].iter().any(|v| taken.contains(v)) {
+                    continue;
+                }
+                taken.extend(members[t].iter().copied());
+                last.push(t);
             }
-            taken.extend(members[t].iter().copied());
-            last.push(t);
+            last.sort_by_cached_key(|&t| (seen[t].lits.iter().map(|&l| var(l)).min().unwrap(), seen[t].lits.clone()));
         }
-        last.sort_by_key(|&t| (seen[t].lits.iter().map(|&l| var(l)).min().unwrap(), seen[t].lits.clone()));
         if !rd.spent() {
-            rd.numbers = last.into_iter().map(|t| seen[t].clone()).collect();
+            // the chosen numbers are taken out of the list, not copied: a
+            // number's readers can be hundreds of thousands
+            let mut slots: Vec<Option<Number>> = seen.into_iter().map(Some).collect();
+            rd.numbers = last.into_iter().filter_map(|t| slots[t].take()).collect();
             rd.counts.numbers = rd.numbers.len();
-            rd.counts.counted = rd.numbers.iter().filter(|n| is_counted(n)).count();
+            // (only numbers under a count are kept as candidates)
+            rd.counts.counted = rd.numbers.len();
             rd.link_numbers();
         }
     }
@@ -1955,9 +1984,10 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     rd.p.clock.look();
     let work = rd.p.clock.work;
     let c = &rd.counts;
-    let histogram = |only_counted: bool| -> String {
+    // the numbers by how many values they have (all of them are under a count)
+    let values_text = {
         let mut hist: HashMap<usize, usize> = HashMap::new();
-        for num in rd.numbers.iter().filter(|n| !only_counted || is_counted(n)) {
+        for num in rd.numbers.iter() {
             *hist.entry(num.n() + 1).or_insert(0) += 1;
         }
         let mut list: Vec<(usize, usize)> = hist.into_iter().collect();
@@ -1968,8 +1998,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
             list.iter().map(|(v, k)| format!("{}x{}", v, k)).collect::<Vec<_>>().join(",")
         }
     };
-    let values_text = histogram(false);
-    let counted_text = histogram(true);
+    let counted_text = values_text.clone();
     let added = written;
     // stopped: at the pass's limit. dense: too many paths, nothing read.
     // partial: the tests ran out of their allowance, what was read is linked
