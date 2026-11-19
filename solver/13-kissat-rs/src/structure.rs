@@ -495,22 +495,27 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             let own = cap((solver.options.structcountticks as u64).saturating_mul(1000), solver);
             crate::structcount::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
         }
-        if solver.options.structnum != 0 && !derived.refuted {
-            // the number pass (src/structnum.rs), after every pass that
-            // derives clauses: its clauses follow from the input alone and
-            // each is a rup step, so whatever the earlier passes added only
-            // helps the checker; and a symmetry pass after it would have to
-            // map its clauses. With a limit of its own from where the
-            // earlier passes stopped
-            let own = cap((solver.options.structnumticks as u64).saturating_mul(1000), solver);
-            crate::structnum::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
-        }
         if solver.options.gauss != 0 && !derived.refuted {
             // the parity engine's XOR constraints (src/gauss.rs), read
             // from the input within the base budget
             let (xors, mixed) = crate::structparity::xors(&formula, budget, &mut solver.statistics.ticks, stop_ref);
             solver.gauss.xors = xors;
             solver.gauss.mixed = mixed;
+        }
+        if solver.options.structnum != 0 && !derived.refuted {
+            // the number pass (src/structnum.rs), after every pass that
+            // derives clauses: its clauses follow from the input alone and
+            // each is a rup step, so whatever the earlier passes added only
+            // helps the checker; and a symmetry pass after it would have to
+            // map its clauses. With a limit of its own from where the
+            // earlier passes stopped. It comes after everything that stops
+            // at the stage's base limit (the XOR reading just above): that
+            // limit is a tick count to stop at, and a pass that went first
+            // would use it up. (It did, in its first place: with the pass
+            // on, bp5_CSO and 6s299b685_Iter30 read no XOR constraint at
+            // all, against 120,285 and 630,638.)
+            let own = cap((solver.options.structnumticks as u64).saturating_mul(1000), solver);
+            crate::structnum::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
         }
         if solver.options.card != 0 && !derived.refuted {
             // the count and alldifferent engine's constraints (src/card.rs), last,

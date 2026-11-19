@@ -734,3 +734,63 @@ fn a_number_with_thousands_of_readers_is_paid_for_at_every_step() {
     }
     assert!(cut >= 20, "the limits of this test never cut the pass: {} of them did (the whole pass costs {})", cut, full);
 }
+
+#[test]
+fn the_pass_takes_nothing_from_the_reading_of_xor_constraints() {
+    // The XOR reading (the parity engine's input) stops at the structure
+    // stage's base limit, a tick count. The number pass used to run before
+    // it: where the pass's work took the clock past that limit, the XOR
+    // reading found nothing (bp5_CSO: 120,285 constraints without the pass,
+    // none with it). Here: 50 copies of the toy and 40 XOR constraints, all
+    // on variables of their own, and a base limit just above what the stage
+    // needs without the pass and far below that plus the pass's work. The
+    // same constraints are read with the pass on and off
+    let fx = Fixture::new("num-xors");
+    let cnf = fx.path("xors.cnf");
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for k in 0..50 {
+        cl.extend(toy().iter().map(|c| c.iter().map(|&l| if l > 0 { l + 7 * k } else { l - 7 * k }).collect::<Vec<i64>>()));
+    }
+    let mut top = 350i64;
+    for _ in 0..40 {
+        let (a, b, c) = (top + 1, top + 2, top + 3);
+        top += 3;
+        cl.extend([vec![a, b, -c], vec![a, -b, c], vec![-a, b, c], vec![-a, -b, -c]]);
+    }
+    write_cnf(&cnf, top, &cl);
+    let xors = |out: &str| -> Option<String> { out.lines().find(|l| l.starts_with("c parity engine: ") && l.contains("XOR constraints in the input")).map(str::to_string) };
+    // the shipped defaults (the parity engine is on)
+    let free = run_shipped(&cnf, &[], &[]);
+    let want = xors(&free.stdout).unwrap_or_else(|| panic!("no XOR reading:\n{}", free.stdout));
+    assert!(want.contains("40 XOR"), "{}", want);
+    // the smallest base limit (in thousands) at which the stage, without the
+    // pass, still gets to read the XOR constraints
+    let reads = |limit_k: u64, extra: &[&str]| -> bool {
+        let limit = format!("--structticks={}", limit_k);
+        let mut opts: Vec<&str> = vec![&limit];
+        opts.extend_from_slice(extra);
+        xors(&run_shipped(&cnf, &opts, &[]).stdout).is_some()
+    };
+    let (mut lo, mut hi) = (0u64, 4000u64);
+    assert!(reads(hi, &[]), "no XOR reading at a base limit of {}K", hi);
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if reads(mid, &[]) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    // just above it there is room for the XOR reading and none for the pass's
+    // work before it (the pass's work is checked below): with the pass on
+    // the reading must be the same
+    let limit = format!("--structticks={}", hi + 5);
+    let off = run_shipped(&cnf, &[&limit], &[]);
+    assert_eq!(xors(&off.stdout), Some(want.clone()), "{}", off.stdout);
+    let on = run_shipped(&cnf, &[&limit, "--structnum=1"], &[]);
+    assert_eq!(xors(&on.stdout), Some(want), "the XOR reading changed with the pass on (base limit {}K):\n{}", hi + 5, on.stdout);
+    let r = report(&on.stdout);
+    assert_eq!(r.get("status").map(String::as_str), Some("read"), "{:?}", r);
+    assert_eq!(r.get("added").map(String::as_str), Some("200"), "{:?}", r);
+    assert!(r["work"].parse::<u64>().unwrap() > 20_000, "the pass's work no longer passes the 5K of room this test leaves: {:?}", r);
+}
