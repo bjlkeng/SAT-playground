@@ -372,6 +372,15 @@ def selftest(a):
         good = d / "good.cnf.xz"
         good.write_bytes(whole)
         assert measure(good, ["--all"])["clauses"] == "4000"
+        # a part of the count that the work limit ends before its first look has no estimate:
+        # NA, and the report leaves the row out of that part
+        chain = [[-v, v + 1] for v in range(1, 1000)] + [[v, -(v + 1)] for v in range(1, 1000)]
+        write_cnf(f, 1000, chain)
+        got = measure(f, ["--sources", 0, "--probe-sources", 0, "--work", 20000])
+        assert got["eq_vars"] == "0" and got["eq_hidden_all"] == "NA" and got["one_way_all"] == "NA", got
+        assert not looked(got, "equal") and not looked(got, "pairs")
+        got = measure(f, ["--probe-sources", 0, "--sources", 10, "--eq-vars", 5])
+        assert got["eq_hidden_all"] == "0" and got["one_way_all"] == "0" and looked(got, "equal") and looked(got, "pairs"), got
         # Rust against Python on the Z3 catalog's small records
         import z3_catalog as zc
         recs = [r for r in zc.load(zc.CATALOG) if r["n_vars"] <= a.max_vars]
@@ -539,6 +548,16 @@ def num(r, k):
         return 0.0
 
 
+def looked(r, part):
+    """A part of the count looked at something in this row: "pairs" (the
+    two-literal clauses and the root clauses), "equal" (the equal
+    variables), "near" or "far" (pairs of literals).  A part that the work
+    limit ended before its first look has no estimate, and a 0 there is no
+    measured 0."""
+    key = {"pairs": "sources", "equal": "eq_vars", "near": "probe_sources", "far": "far_pairs"}[part]
+    return num(r, key) > 0 or num(r, "active") == 0
+
+
 def cmd_report(a):
     fam = families()
     rows = []
@@ -572,23 +591,35 @@ def cmd_report(a):
         return num(r, "roots_all") / max(num(r, "active"), 1)
 
     print(f"\n{'family':40s} files | with a hidden equal variable; such pairs a variable: middle, most | "
-          f"of the two-literal clauses propagation sees, the share seen from one side only: middle | one-way root clauses a variable: middle | "
+          f"of the two-literal clauses propagation sees, the share seen from one side only: middle | "
+          f"one-way root clauses a variable: middle | "
           f"three-literal clauses met by near pairs, not seen from every side: middle share")
     table = []
     for name, rs in by.items():
-        have = [r for r in rs if num(r, "eq_hidden") > 0]
-        table.append((mid(eq(r) for r in rs), len(have) / len(rs), name, len(rs), len(have), max((eq(r) for r in rs), default=0),
-                      mid(share(r) for r in rs), mid(roots(r) for r in rs), mid(tside(r) for r in rs)))
+        e = [r for r in rs if looked(r, "equal")]
+        pr = [r for r in rs if looked(r, "pairs")]
+        nr = [r for r in rs if looked(r, "near")]
+        have = [r for r in e if num(r, "eq_hidden") > 0]
+        table.append((mid(eq(r) for r in e), len(have) / max(len(e), 1), name, len(rs), len(have), max((eq(r) for r in e), default=0),
+                      mid(share(r) for r in pr), mid(roots(r) for r in pr), mid(tside(r) for r in nr)))
     key = {"equal": lambda t: (-t[0], -t[1], -t[5]), "share": lambda t: -t[6], "roots": lambda t: -t[7]}[a.sort]
     for m, _f, name, k, have, top, sh, rt, ts in sorted(table, key=key)[:a.top]:
         print(f"{name[:40]:40s} {k:5d} | {have:4d}  {m:8.4f} {top:8.4f} | {sh:7.4f} | {rt:9.2f} | {ts:7.4f}")
-    whole = sorted(share(r) for r in ok)
-    have = [r for r in ok if num(r, "eq_hidden") > 0]
-    fams = sum(1 for rs in by.values() if any(num(r, "eq_hidden") > 0 for r in rs))
-    print(f"\nall {len(ok)} files: a hidden equal variable on {len(have)} (in {fams} of {len(by)} families), more than one "
-          f"such pair a 100 variables on {sum(eq(r) > 0.01 for r in ok)}; one-way share in the middle {mid(whole):.4f}, "
-          f"above 0.1 on {sum(x > 0.1 for x in whole)}, above 0.3 on {sum(x > 0.3 for x in whole)}; "
-          f"a failed literal in the sample on {sum(num(r, 'failed') > 0 for r in ok)}")
+    e = [r for r in ok if looked(r, "equal")]
+    pr = [r for r in ok if looked(r, "pairs")]
+    whole = sorted(share(r) for r in pr)
+    have = [r for r in e if num(r, "eq_hidden") > 0]
+    fams = sum(1 for rs in by.values() if any(looked(r, "equal") and num(r, "eq_hidden") > 0 for r in rs))
+    print(f"\n{len(ok)} files measured; the equal variables were looked at on {len(e)}, the pairs on {len(pr)} "
+          f"(on the others the work limit ended that part before its first look).  A hidden equal variable on {len(have)} "
+          f"(in {fams} of {len(by)} families), more than one such pair a 100 variables on {sum(eq(r) > 0.01 for r in e)}; "
+          f"one-way share in the middle {mid(whole):.4f}, above 0.1 on {sum(x > 0.1 for x in whole)}, "
+          f"above 0.5 on {sum(x > 0.5 for x in whole)}; a failed literal in the sample on {sum(num(r, 'failed') > 0 for r in pr)}")
+    far = [r for r in ok if looked(r, "far") and num(r, "f1") + num(r, "f2") + num(r, "f3") > 0]
+    if far:
+        fs = sorted((num(r, "f1") + num(r, "f2")) / (num(r, "f1") + num(r, "f2") + num(r, "f3")) for r in far)
+        print(f"far pairs with a joint consequence on {len(far)} files; of the three-literal clauses they meet, the share not "
+              f"seen from every side: middle {mid(fs):.4f}")
 
 
 def cmd_one(a):

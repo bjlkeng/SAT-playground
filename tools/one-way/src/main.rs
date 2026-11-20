@@ -932,16 +932,14 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
         pairs_of.clear();
         pairs_of.extend(seconds.iter().map(|&a2| (a2, false)));
         if !o.all && o.far_pairs > 0 {
-            // any open literal, drawn evenly, before or after a1 in the numbering: a pair
-            // can be drawn from either of its ends, every pair as likely as any other.
-            // The near pairs are where joint consequences are dense; these say what
-            // holds over all pairs.
-            let from = pairs_of.len();
-            let mut tries = 0;
-            while pairs_of.len() - from < o.far_pairs && tries < 8 * o.far_pairs {
-                tries += 1;
+            // a fixed number of draws from all literals, each draw any literal, before
+            // or after a1 in the numbering; a draw that a1 has set already is dropped
+            // and not drawn again.  So every pair of literals is as likely as any other,
+            // whatever a1 sets.  The near pairs are where joint consequences are dense;
+            // these say what holds over all pairs.
+            for _ in 0..o.far_pairs {
                 let a2 = active[rng.below(active.len())];
-                if (a2 >> 1) != (a1 >> 1) && p.val[a2 as usize] == 0 && !pairs_of[from..].iter().any(|&(x, _)| x == a2) {
+                if (a2 >> 1) != (a1 >> 1) && p.val[a2 as usize] == 0 {
                     pairs_of.push((a2, true));
                 }
             }
@@ -1146,11 +1144,15 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
     // from one side only (a two-way clause was met from both its sides: half of them)
     let clauses_w = c.two_way_inst / 2.0 + c.one_way;
     let share = if clauses_w > 0.0 { c.one_way / clauses_w } else { 0.0 };
+    // a part of the count that looked at nothing though variables are open has no
+    // estimate: NA, not 0
+    let est = |x: f64, looked: u64| if looked == 0 && !active.is_empty() { "NA".to_string() } else { format!("{x:.0}") };
+    let share_text = if c.sources == 0 && !active.is_empty() { "NA".to_string() } else { format!("{share:.6}") };
     let mut line = format!(
         "c oneway status={status} vars={} clauses={} units={units} active={} bin={} long={} sources={} failed={} \
-         seen={:.0} seen_max={} checked={} two_way={:.1} one_way={:.1} hidden_unit={:.1} one_way_share={share:.6} \
-         seen_all={:.0} two_way_all={:.0} one_way_all={:.0} roots={} roots_two_way={} roots_unit={} roots_all={:.0} \
-         eq_vars={} eq_two_way={:.1} eq_hidden={} eq_units={} eq_hidden_all={:.0} \
+         seen={:.0} seen_max={} checked={} two_way={:.1} one_way={:.1} hidden_unit={:.1} one_way_share={share_text} \
+         seen_all={} two_way_all={} one_way_all={} roots={} roots_two_way={} roots_unit={} roots_all={} \
+         eq_vars={} eq_two_way={:.1} eq_hidden={} eq_units={} eq_hidden_all={} \
          probe_sources={} pairs={} pair_one_way={} pair_hidden={} pairs_with_joint={} joint={:.0} joint_checked={} \
          improper={:.1} t1={:.2} t2={:.2} t3={:.2} t0={} triples={} \
          far_pairs={} far_pair_one_way={} far_pair_hidden={} far_with_joint={} far_joint={:.0} far_checked={} \
@@ -1168,18 +1170,18 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
         c.two_way_inst / 2.0,
         c.one_way,
         c.hidden_unit,
-        c.seen * scale,
-        c.two_way_inst * scale / 2.0,
-        c.one_way * scale,
+        est(c.seen * scale, c.sources),
+        est(c.two_way_inst * scale / 2.0, c.sources),
+        est(c.one_way * scale, c.sources),
         c.roots,
         c.roots_two_way,
         c.roots_unit,
-        c.roots as f64 * scale,
+        est(c.roots as f64 * scale, c.sources),
         c.eq_vars,
         c.eq_two_way_inst as f64 / 2.0,
         c.eq_hidden,
         c.eq_units,
-        c.eq_hidden as f64 * eq_scale,
+        est(c.eq_hidden as f64 * eq_scale, c.eq_vars),
         c.probe_sources,
         c.near.pairs,
         c.near.pair_conflict_seen,
@@ -1701,5 +1703,26 @@ mod tests {
         // only the literal "t" as a first literal: its partner "s" comes before it
         probe(&mut p, &[lit_of(2)], &active, &o, &mut rng, u64::MAX, &mut c);
         assert!(c.far.t_inst[1] >= 1.0, "far {:?}", c.far.t_inst);
+    }
+
+    #[test]
+    fn a_far_draw_that_the_first_literal_has_set_is_not_drawn_again() {
+        // s sets 50 variables; 50 more are free (each in one long clause).  100 draws for the
+        // source s: those that land on what s has set are dropped, so fewer than 100 pairs
+        // are tried, and a source that sets much gets no more pairs than its draws allow
+        let mut cls: Vec<Vec<i64>> = Vec::new();
+        for i in 0..50i64 {
+            cls.push(vec![-1, 2 + i]);
+        }
+        cls.push((52..102i64).collect());
+        let refs: Vec<&[i64]> = cls.iter().map(|c| c.as_slice()).collect();
+        let f = formula(101, &refs);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { probe_sources: 1, probe_pairs: 0, joint: 4, far_pairs: 100, ..Default::default() };
+        let mut rng = Rng::new(3);
+        let mut c = Counts::default();
+        probe(&mut p, &[lit_of(1)], &active, &o, &mut rng, u64::MAX, &mut c);
+        assert!(c.far.pairs > 20 && c.far.pairs < 80, "pairs {}", c.far.pairs);
     }
 }
