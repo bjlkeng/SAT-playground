@@ -662,34 +662,52 @@ fn binary_sides(p: &mut Prop, order: &[Lit], o: &Opts, rng: &mut Rng, budget: u6
                 kinds: Option<&(Vec<u16>, Vec<String>)>, by_kind: &mut Vec<f64>, roots_by_kind: &mut Vec<f64>) {
     let mut imp: Vec<Lit> = Vec::new();
     let mut roots: Vec<Lit> = Vec::new();
+    let mut one_way_roots: Vec<Lit> = Vec::new();
     let nk = kinds.map_or(0, |k| k.1.len());
     for &s in order {
         if !o.all && (c.sources as usize >= o.sources || p.work >= budget) {
             break;
         }
-        c.sources += 1;
         if !p.implied_roots(s, &mut imp, &mut roots) {
+            c.sources += 1;
             c.failed += 1;
             continue;
         }
-        // the root clauses of this source: every one is looked at
+        // the root clauses of this source: every one is looked at, or the source does
+        // not count (the work limit can end the look in the middle of them)
+        let (mut r_unit, mut r_two) = (0u64, 0u64);
+        one_way_roots.clear();
+        let mut cut = false;
         for &m in &roots {
+            if !o.all && p.work >= budget {
+                cut = true;
+                break;
+            }
             let mark = p.trail.len();
             let bad = p.assume(m ^ 1);
             let seen = !bad && p.val[(s ^ 1) as usize] == 1;
             p.undo(mark);
             if bad {
-                c.roots_unit += 1;
+                r_unit += 1;
             } else if seen {
-                c.roots_two_way += 1;
+                r_two += 1;
             } else {
-                c.roots += 1;
-                if c.root_examples.len() < o.examples {
-                    c.root_examples.push((s, m));
-                }
-                if let Some((kind, _)) = kinds {
-                    roots_by_kind[kind[(s >> 1) as usize] as usize * nk + kind[(m >> 1) as usize] as usize] += 1.0;
-                }
+                one_way_roots.push(m);
+            }
+        }
+        if cut {
+            break;
+        }
+        c.sources += 1;
+        c.roots_unit += r_unit;
+        c.roots_two_way += r_two;
+        c.roots += one_way_roots.len() as u64;
+        for &m in &one_way_roots {
+            if c.root_examples.len() < o.examples {
+                c.root_examples.push((s, m));
+            }
+            if let Some((kind, _)) = kinds {
+                roots_by_kind[kind[(s >> 1) as usize] as usize * nk + kind[(m >> 1) as usize] as usize] += 1.0;
             }
         }
         c.seen += imp.len() as f64;
@@ -1074,8 +1092,10 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
     // from the sources looked at to every open literal
     let scale = if c.sources > 0 { active.len() as f64 / c.sources as f64 } else { 0.0 };
     let eq_scale = if c.eq_vars > 0 { (active.len() / 2) as f64 / c.eq_vars as f64 } else { 0.0 };
-    let checked_w = c.two_way_inst + c.one_way + c.hidden_unit;
-    let share = if checked_w > 0.0 { c.one_way / checked_w } else { 0.0 };
+    // of the two-literal clauses that propagation sees from a side, the share it sees
+    // from one side only (a two-way clause was met from both its sides: half of them)
+    let clauses_w = c.two_way_inst / 2.0 + c.one_way;
+    let share = if clauses_w > 0.0 { c.one_way / clauses_w } else { 0.0 };
     let mut line = format!(
         "c oneway status={status} vars={} clauses={} units={units} active={} bin={} long={} sources={} failed={} \
          seen={:.0} seen_max={} checked={} two_way={:.1} one_way={:.1} hidden_unit={:.1} one_way_share={share:.6} \
@@ -1206,6 +1226,10 @@ fn close(path: &str, out: &str, o: &Opts) -> Result<String, String> {
                 continue;
             }
             for &m in &roots {
+                if p.work >= o.work {
+                    status = "stopped";
+                    break 'all;
+                }
                 let mark = p.trail.len();
                 let bad = p.assume(m ^ 1);
                 let seen = !bad && p.val[(s ^ 1) as usize] == 1;
@@ -1517,5 +1541,36 @@ mod tests {
     fn a_clause_without_its_closing_zero_is_refused() {
         assert!(parse_dimacs("p cnf 2 1\n1 2\n".as_bytes(), 10).is_err());
         assert_eq!(parse_dimacs("p cnf 2 1\n1 2 0\n".as_bytes(), 10).unwrap().n_clauses, 1);
+    }
+
+    #[test]
+    fn the_work_limit_holds_inside_the_roots_of_one_source() {
+        // s -> a_i for 200 i, (not a_i or not a_j or m_k) for 200 k, and each m_k off sets 100
+        // more literals: s has 200 root clauses, and the look at each costs over 100
+        let mut cls: Vec<Vec<i64>> = Vec::new();
+        for i in 0..200i64 {
+            cls.push(vec![-1, 2 + i]);
+        }
+        for k in 0..200i64 {
+            cls.push(vec![-(2 + k), -(2 + (k + 1) % 200), 202 + k]);
+            for j in 0..100i64 {
+                cls.push(vec![202 + k, 1000 + 100 * k + j]);
+            }
+        }
+        let refs: Vec<&[i64]> = cls.iter().map(|c| c.as_slice()).collect();
+        let f = formula(21_000, &refs);
+        let (mut p, _) = load(&f).unwrap();
+        let o = Opts { sources: 10, targets: 1, ..Default::default() };
+        let mut rng = Rng::new(1);
+        let mut c = Counts::default();
+        let (mut by, mut by2) = (Vec::new(), Vec::new());
+        binary_sides(&mut p, &[lit_of(1)], &o, &mut rng, 5_000, &mut c, None, &mut by, &mut by2);
+        // the 200 roots would cost over 20,000: the limit cuts the look, and the source is not counted
+        assert!(p.work < 8_000, "work {}", p.work);
+        assert_eq!((c.sources, c.roots), (0, 0));
+        // with room for all of it the 200 roots are counted, all one-way
+        let mut c = Counts::default();
+        binary_sides(&mut p, &[lit_of(1)], &o, &mut rng, u64::MAX, &mut c, None, &mut by, &mut by2);
+        assert_eq!((c.sources, c.roots), (1, 200));
     }
 }

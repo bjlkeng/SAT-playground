@@ -542,28 +542,44 @@ def cmd_report(a):
     for r in ok:
         by[fam.get(r["stem"], ("?", ""))[0]].append(r)
 
+    def mid(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else 0.0
+
     def share(r):
-        return num(r, "one_way_share")
+        # of the two-literal clauses propagation sees, those it sees from one side only
+        # (from the counts, so that tables of every version of the tool read alike)
+        t = num(r, "two_way") + num(r, "one_way")
+        return num(r, "one_way") / t if t else 0.0
 
     def tside(r):
         t = num(r, "t1") + num(r, "t2") + num(r, "t3")
         return (num(r, "t1") + num(r, "t2")) / t if t else 0.0
 
-    print(f"\n{'family':46s} files | one-way share of the seen pairs: middle, highest | one-way clauses a variable, middle | "
-          f"three-literal clauses not seen from every side: middle share | hidden pairs a 1,000 tried")
+    def eq(r):                          # hidden equal variables a variable
+        return num(r, "eq_hidden_all") / max(num(r, "active"), 1)
+
+    def roots(r):
+        return num(r, "roots_all") / max(num(r, "active"), 1)
+
+    print(f"\n{'family':40s} files | with a hidden equal variable; such pairs a variable: middle, most | "
+          f"of the two-literal clauses propagation sees, the share seen from one side only: middle | one-way root clauses a variable: middle | "
+          f"three-literal clauses not seen from every side: middle share")
     table = []
     for name, rs in by.items():
-        sh = sorted(share(r) for r in rs)
-        per = sorted(num(r, "one_way_all") / max(num(r, "active"), 1) for r in rs)
-        ts = sorted(tside(r) for r in rs)
-        hid = 1000 * sum(num(r, "pair_hidden") for r in rs) / max(sum(num(r, "pairs") for r in rs), 1)
-        table.append((sh[len(sh) // 2], name, len(rs), sh[-1], per[len(per) // 2], ts[len(ts) // 2], hid))
-    for mid, name, k, hi, per, ts, hid in sorted(table, reverse=True)[:a.top]:
-        print(f"{name[:46]:46s} {k:5d} | {mid:8.4f} {hi:8.4f} | {per:10.2f} | {ts:8.4f} | {hid:8.2f}")
+        have = [r for r in rs if num(r, "eq_hidden") > 0]
+        table.append((mid(eq(r) for r in rs), len(have) / len(rs), name, len(rs), len(have), max((eq(r) for r in rs), default=0),
+                      mid(share(r) for r in rs), mid(roots(r) for r in rs), mid(tside(r) for r in rs)))
+    key = {"equal": lambda t: (-t[0], -t[1], -t[5]), "share": lambda t: -t[6], "roots": lambda t: -t[7]}[a.sort]
+    for m, _f, name, k, have, top, sh, rt, ts in sorted(table, key=key)[:a.top]:
+        print(f"{name[:40]:40s} {k:5d} | {have:4d}  {m:8.4f} {top:8.4f} | {sh:7.4f} | {rt:9.2f} | {ts:7.4f}")
     whole = sorted(share(r) for r in ok)
-    print(f"\nall {len(ok)} files: one-way share in the middle {whole[len(whole) // 2]:.4f}, "
-          f"above 0.01 on {sum(s > 0.01 for s in whole)}, above 0.1 on {sum(s > 0.1 for s in whole)}, "
-          f"above 0.3 on {sum(s > 0.3 for s in whole)}")
+    have = [r for r in ok if num(r, "eq_hidden") > 0]
+    fams = sum(1 for rs in by.values() if any(num(r, "eq_hidden") > 0 for r in rs))
+    print(f"\nall {len(ok)} files: a hidden equal variable on {len(have)} (in {fams} of {len(by)} families), more than one "
+          f"such pair a 100 variables on {sum(eq(r) > 0.01 for r in ok)}; one-way share in the middle {mid(whole):.4f}, "
+          f"above 0.1 on {sum(x > 0.1 for x in whole)}, above 0.3 on {sum(x > 0.3 for x in whole)}; "
+          f"a failed literal in the sample on {sum(num(r, 'failed') > 0 for r in ok)}")
 
 
 def cmd_one(a):
@@ -652,6 +668,7 @@ def main(argv=None):
     s = sub.add_parser("report")
     s.add_argument("tables", nargs="+")
     s.add_argument("--top", type=int, default=40)
+    s.add_argument("--sort", choices=["equal", "share", "roots"], default="equal")
     s = sub.add_parser("close")
     s.add_argument("file")
     s.add_argument("out")

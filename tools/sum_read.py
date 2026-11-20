@@ -144,16 +144,24 @@ class Sum:
 
 
 def networks(cells):
-    """Cells that share a signal, with a weight a cell (a power of two):
-    [(cell indices, {cell: exponent})], and how many were left out because
-    their weights do not fit."""
-    by_sig = defaultdict(list)          # signal -> [(cell, role)], role 0 leaf or sum, 1 carry
-    for ci, (_kind, leaves, _nm, s, _sn, cv, _cn) in enumerate(cells):
+    """Cells joined where one's sum or carry bit is another's input, with a
+    weight a cell (a power of two): [(cell indices, {cell: exponent})], and
+    how many were left out because their weights do not fit.  A signal that
+    no cell makes joins nothing and fixes no weight: the same input may sit
+    in two columns of one sum (3a is a in the column of ones and of twos),
+    or in two sums."""
+    maker = {}                          # signal -> (cell, 0 for its sum bit or 1 for its carry)
+    for ci, (_kind, _leaves, _nm, s, _sn, cv, _cn) in enumerate(cells):
+        maker[s] = (ci, 0)
+        maker[cv] = (ci, 1)
+    links = defaultdict(list)           # cell -> [(cell, its exponent minus this one's)]
+    for cj, (_kind, leaves, _nm, _s, _sn, _cv, _cn) in enumerate(cells):
         for x in leaves:
-            by_sig[x].append((ci, 0))
-        by_sig[s].append((ci, 0))
-        by_sig[cv].append((ci, 1))
-    seen = {}
+            if x in maker:
+                ci, role = maker[x]
+                links[ci].append((cj, role))
+                links[cj].append((ci, -role))
+    seen = set()
     out = []
     bad = 0
     for start in range(len(cells)):
@@ -164,18 +172,14 @@ def networks(cells):
         ok = True
         while stack:
             ci = stack.pop()
-            _kind, leaves, _nm, s, _sn, cv, _cn = cells[ci]
-            for x, role in [(l, 0) for l in leaves] + [(s, 0), (cv, 1)]:
-                e_sig = exp[ci] + role                      # the signal's own exponent
-                for cj, role_j in by_sig[x]:
-                    e = e_sig - role_j
-                    if cj not in exp:
-                        exp[cj] = e
-                        stack.append(cj)
-                    elif exp[cj] != e:
-                        ok = False
-        for ci in exp:
-            seen[ci] = True
+            for cj, d in links[ci]:
+                e = exp[ci] + d
+                if cj not in exp:
+                    exp[cj] = e
+                    stack.append(cj)
+                elif exp[cj] != e:
+                    ok = False
+        seen.update(exp)
         if ok:
             low = min(exp.values())
             out.append((sorted(exp), {ci: e - low for ci, e in exp.items()}))
@@ -518,6 +522,44 @@ def selftest(a):
     assert len(sums) == 1 and sums[0].bound() == ("eq", 1), (dict(notes), [s.bound() for s in sums])
     lits, weights, shift = literal_form(sums[0])
     assert (sorted(lits), weights, shift) == ([A, B], [1, 1], 0)
+    # an input in two columns: a + b = s0 + 2k and k + a = s1 + 2c make 3a + b = s0 + 2*s1 + 4c
+    cl = base + half(A, B, S0, K0) + half(K0, A, S1, K1) + [[-K1]]
+    sums, notes = read_sums(13, cl)
+    assert len(sums) == 1 and sums[0].terms == {A: 3, B: 1} and sums[0].outs == {S0: 1, S1: 2, K1: 4}, (
+        dict(notes), [(s.terms, s.outs) for s in sums])
+    assert sums[0].bound() == ("le", 3), sums[0].bound()
+    # two sums that share an input and nothing else stay two sums
+    cl = base + half(A, B, S0, K0) + half(A, C, S1, K1) + [[-K0], [-K1]]
+    sums, notes = read_sums(13, cl)
+    assert sorted(tuple(sorted(s.terms)) for s in sums) == [(A, B), (A, C)], [s.terms for s in sums]
+    # the adder toys of the encoding catalog (PySAT writes them; the cells found there are a
+    # part of each sum).  Whatever is read must hold in every model: for each allowed joint
+    # value of a toy's inputs a model is found, and each sum's identity and bound are checked in it.
+    import z3_catalog as zc
+    from cnf_prop import satisfiable
+    from enc_catalog import CATALOG
+    checks = 0
+    if CATALOG.exists():
+        for rec in zc.load(CATALOG):
+            if rec["primitive"] != "weighted" or rec["options"] != ["adder"]:
+                continue
+            cl = [list(c) for c in rec["clauses"]]
+            got, notes = read_sums(rec["n_vars"], cl)
+            assert got, (rec["id"], dict(notes))
+            q = Prop(rec["n_vars"], cl)
+            for i, lits in zc.joint(rec):
+                if rec["hard"][i] != "1":
+                    continue
+                model = satisfiable(q, lits)
+                assert model is not None, (rec["id"], lits)
+                on = {v for v, value in model.items() if value}
+                for sm in got:
+                    lhs = sm.const + sum(c for x, c in sm.terms.items() if x in on)
+                    rhs = sum(c for x, c in sm.outs.items() if x in on)
+                    assert lhs == rhs, (rec["id"], sm.terms, sm.outs, lhs, rhs)
+                    assert sm.allowed is None or rhs in sm.allowed, (rec["id"], rhs, sorted(sm.allowed))
+                    checks += 1
+        assert checks > 100, checks
     # a clause with a literal and its opposite says nothing.  Here the half adder's sum bit is
     # "defined" by such clauses only: the gate reading takes them for a definition, the formula
     # does not hold the cell, and no sum may be read (a + b = 1 would rule out the model a = b = 1)
@@ -531,7 +573,8 @@ def selftest(a):
     sums, notes = read_sums(11, cl)
     assert not sums, (dict(notes), [s.text() for s in sums])
     print(f"selftest: ok (a + b + 2c <= 2 read from two half adders: of {need} inputs the bound rules out, "
-          f"propagation sets {found}; a + b = 1 read from one)")
+          f"propagation sets {found}; a + b = 1 read from one; 3a + b with a in two columns; the sums read from "
+          f"PySAT's adder toys hold in {checks} model checks)")
 
 
 def main(argv=None):
