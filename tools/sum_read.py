@@ -15,8 +15,11 @@ tool here said what such a circuit adds up.  This one does:
      signal (a carry weighs twice its cell), and the cells' equations are
      added up, so that the inner signals cancel:
          sum of weight * input  +  constant  =  sum of weight * output
-  3. that identity is checked on 64 random settings of the formula's free
-     variables (it follows from the gate definitions alone);
+  3. every cell is asked of the formula itself: with its inputs set, each
+     way, propagation must set its two output bits as an adder would (the
+     gate reading is a guess; this is the check).  A network with a cell
+     that fails is not read.  The identity is also checked on 64 random
+     settings of the free variables;
   4. every pattern of the outputs is set, and propagation says which the
      formula allows: "at most c", "at least c", "exactly c" or a set.
 
@@ -206,10 +209,42 @@ def linear(cells, members, exp):
     return {x: c for x, c in coef.items() if c}, const
 
 
+def cell_holds(p, cell):
+    """The cell's equation, asked of the formula itself: with its two or
+    three inputs set, each way, propagation must set the sum bit and the
+    carry bit to what an adder gives.  (A setting that propagation refutes
+    has no model and asks nothing.)  The gate reading is a guess at what the
+    clauses define; this is the check that they do."""
+    kind, leaves, negmask, s, sneg, cv, cneg = cell
+    for pat in range(1 << len(leaves)):
+        lits = [x if (pat >> i) & 1 else -x for i, x in enumerate(leaves)]
+        got = p.implied(lits)
+        if got is None:
+            continue
+        got = set(got)
+        total = sum(((pat >> i) & 1) ^ ((negmask >> i) & 1) for i in range(len(leaves))) + (kind == "HA1")
+        for x, neg, bit in ((s, sneg, total & 1), (cv, cneg, total >> 1)):
+            want = x if bool(bit) != bool(neg) else -x
+            if want not in got and p.value(want) != 1:
+                return False
+        if total > 3:
+            return False
+    return True
+
+
 def read_sums(n_vars, clauses, look=True, rng=None):
-    """The sums of a formula: (list of Sum, notes)."""
+    """The sums of a formula: (list of Sum, notes).  A sum is kept only when
+    every one of its cells holds in the formula by propagation (`cell_holds`),
+    so that its identity follows from the clauses and not from a reading of
+    them."""
     notes = Counter()
-    gates, _used, _deadlocks, _topo = nc.recover_gates(clauses, n_vars)
+    # the gate reading wants clauses without a literal twice or with its opposite
+    plain = []
+    for c in clauses:
+        c = list(dict.fromkeys(c))
+        if not any(-l in c for l in c):
+            plain.append(c)
+    gates, _used, _deadlocks, _topo = nc.recover_gates(plain, n_vars)
     notes["gates"] = len(gates)
     if not gates:
         return [], notes
@@ -236,13 +271,15 @@ def read_sums(n_vars, clauses, look=True, rng=None):
         w = val.get(r, words.get(r, 0))
         return (w ^ mask) if neg else w
 
-    produced_all = {}
-    for ci, (_k, _l, _nm, s, _sn, cv, _cn) in enumerate(cells):
-        produced_all[s] = ci
-        produced_all[cv] = ci
     sums = []
-    prop = None
+    prop = Prop(n_vars, clauses)
+    if prop.root_conflict:
+        notes["refuted_by_units"] = 1
+        return [], notes
     for members, exp in nets:
+        if not all(cell_holds(prop, cells[ci]) for ci in members):
+            notes["cells_not_in_the_clauses"] += 1
+            continue
         coef, const = linear(cells, members, exp)
         made = {x for ci in members for x in (cells[ci][3], cells[ci][5])}
         terms = {x: c for x, c in coef.items() if x not in made}
@@ -268,18 +305,13 @@ def read_sums(n_vars, clauses, look=True, rng=None):
                 s.why = f"{len(outs)} outputs"
                 notes["too_many_outputs"] += 1
             else:
-                if prop is None:
-                    prop = Prop(n_vars, clauses)
-                if prop.root_conflict:
-                    s.why = "the formula is refuted by its units"
-                else:
-                    xs = sorted(outs)
-                    allowed = set()
-                    for pat in range(1 << len(xs)):
-                        lits = [x if (pat >> i) & 1 else -x for i, x in enumerate(xs)]
-                        if not prop.refutes(lits):
-                            allowed.add(sum(outs[x] for i, x in enumerate(xs) if (pat >> i) & 1))
-                    s.allowed = allowed
+                xs = sorted(outs)
+                allowed = set()
+                for pat in range(1 << len(xs)):
+                    lits = [x if (pat >> i) & 1 else -x for i, x in enumerate(xs)]
+                    if not prop.refutes(lits):
+                        allowed.add(sum(outs[x] for i, x in enumerate(xs) if (pat >> i) & 1))
+                s.allowed = allowed
         sums.append(s)
     notes["sums"] = len(sums)
     return sums, notes
@@ -389,7 +421,8 @@ def cmd_variant(a):
           f"{top - n_vars} variables added; wrote {a.out}")
 
 
-COLS = ["stem", "vars", "clauses", "gates", "cells", "networks", "weights_do_not_fit", "identity_fails", "sums", "bounded",
+COLS = ["stem", "vars", "clauses", "gates", "cells", "networks", "weights_do_not_fit", "cells_not_in_the_clauses",
+        "identity_fails", "sums", "bounded",
         "le", "ge", "eq", "set", "free", "inputs_max", "weights", "biggest", "seconds", "error"]
 
 
@@ -408,6 +441,7 @@ def census_job(path):
             big = max(sums, key=lambda s: len(s.terms), default=None)
             row.update(gates=notes["gates"], cells=notes["cells"], networks=notes["networks"],
                        weights_do_not_fit=notes["weights_do_not_fit"], identity_fails=notes["identity_fails"],
+                       cells_not_in_the_clauses=notes["cells_not_in_the_clauses"],
                        sums=len(sums), bounded=kinds["le"] + kinds["ge"] + kinds["eq"], le=kinds["le"], ge=kinds["ge"],
                        eq=kinds["eq"], set=kinds["set"], free=kinds["free"],
                        inputs_max=len(big.terms) if big else 0,
@@ -484,6 +518,18 @@ def selftest(a):
     assert len(sums) == 1 and sums[0].bound() == ("eq", 1), (dict(notes), [s.bound() for s in sums])
     lits, weights, shift = literal_form(sums[0])
     assert (sorted(lits), weights, shift) == ([A, B], [1, 1], 0)
+    # a clause with a literal and its opposite says nothing.  Here the half adder's sum bit is
+    # "defined" by such clauses only: the gate reading takes them for a definition, the formula
+    # does not hold the cell, and no sum may be read (a + b = 1 would rule out the model a = b = 1)
+    fake = [[-A, -B, -S0, S0], [A, B, -S0, S0], [A, -B, S0, -S0], [-A, B, S0, -S0]] + gate_and(K0, A, B)
+    cl = base + fake + [[S0], [-K0]]
+    sums, notes = read_sums(11, cl)
+    assert not sums, (dict(notes), [s.text() for s in sums])
+    # one half of the sum bit's definition only (s -> a xor b): the other way is not in the
+    # clauses, so setting a and b does not set s, and the cell is not taken
+    cl = base + [[-A, -B, -S0], [A, B, -S0]] + gate_and(K0, A, B) + [[S0], [-K0]]
+    sums, notes = read_sums(11, cl)
+    assert not sums, (dict(notes), [s.text() for s in sums])
     print(f"selftest: ok (a + b + 2c <= 2 read from two half adders: of {need} inputs the bound rules out, "
           f"propagation sets {found}; a + b = 1 read from one)")
 

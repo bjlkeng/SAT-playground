@@ -352,18 +352,36 @@ fn read_cnf(path: &str, max_clauses: usize) -> Result<Formula, String> {
     if real.components().any(|c| c.as_os_str() == "sat-comp-2026") {
         return Err("the 2026 suite is held out and is never read".into());
     }
+    let mut child = None;
     let reader: Box<dyn Read> = if path.ends_with(".xz") {
-        let child = Command::new("xz")
+        let mut c = Command::new("xz")
             .arg("-dc")
             .arg(path)
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("xz: {e}"))?;
-        Box::new(child.stdout.unwrap())
+        let out = c.stdout.take().unwrap();
+        child = Some(c);
+        Box::new(out)
     } else {
         Box::new(File::open(path).map_err(|e| format!("{path}: {e}"))?)
     };
-    let mut rd = BufReader::with_capacity(1 << 20, reader);
+    let parsed = parse_dimacs(BufReader::with_capacity(1 << 20, reader), max_clauses);
+    if let Some(mut c) = child {
+        if parsed.is_err() {
+            let _ = c.kill();
+        }
+        // a file that xz cannot unpack to its end is no formula, whatever was read of it
+        let st = c.wait().map_err(|e| format!("xz: {e}"))?;
+        if parsed.is_ok() && !st.success() {
+            return Err(format!("{path}: xz failed ({st})"));
+        }
+    }
+    parsed
+}
+
+fn parse_dimacs<R: BufRead>(mut rd: R, max_clauses: usize) -> Result<Formula, String> {
     let mut nv = 0usize;
     let mut clauses: Vec<Vec<Lit>> = Vec::new();
     let mut cur: Vec<Lit> = Vec::new();
@@ -416,6 +434,9 @@ fn read_cnf(path: &str, max_clauses: usize) -> Result<Formula, String> {
                 cur.push(lit_of(if negative { -x } else { x }));
             }
         }
+    }
+    if !cur.is_empty() {
+        return Err("the last clause has no closing 0".into());
     }
     let n_clauses = clauses.len();
     Ok(Formula { nv, n_clauses, clauses })
@@ -713,12 +734,13 @@ fn binary_sides(p: &mut Prop, order: &[Lit], o: &Opts, rng: &mut Rng, budget: u6
 /// sets v off).  In `units`: the literals that follow both ways, which are
 /// true in every model.  False when v or its opposite fails.
 fn equal_to(p: &mut Prop, v: Lit, on: &mut Vec<Lit>, off: &mut Vec<Lit>, stamp: &mut [u32], epoch: u32,
-            out: &mut Vec<(Lit, bool, bool)>, units: &mut u64, both: &mut Vec<Lit>) -> bool {
+            out: &mut Vec<(Lit, bool, bool)>, units: &mut u64, both: &mut Vec<Lit>, budget: u64) -> Look {
     out.clear();
     both.clear();
     if !p.implied(v, on) || !p.implied(v ^ 1, off) {
-        return false;
+        return Look::Fails;
     }
+    let units_before = *units;
     for &l in off.iter() {
         stamp[l as usize] = epoch;
     }
@@ -732,6 +754,13 @@ fn equal_to(p: &mut Prop, v: Lit, on: &mut Vec<Lit>, off: &mut Vec<Lit>, stamp: 
         }
     }
     for h in eq {
+        if p.work >= budget {
+            // out of work in the middle of this variable: what was found of it is dropped
+            out.clear();
+            both.clear();
+            *units = units_before;
+            return Look::Cut;
+        }
         // h's own side: h sets v, and h off sets v off
         let mark = p.trail.len();
         let bad = p.assume(h);
@@ -745,7 +774,15 @@ fn equal_to(p: &mut Prop, v: Lit, on: &mut Vec<Lit>, off: &mut Vec<Lit>, stamp: 
         }
         out.push((h, up, down));
     }
-    true
+    Look::Done
+}
+
+/// How the look at one variable ended.
+#[derive(PartialEq)]
+enum Look {
+    Done,
+    Fails,
+    Cut,
 }
 
 /// The equal variables of a sample of variables.
@@ -764,10 +801,15 @@ fn equal_vars(p: &mut Prop, order: &[Lit], o: &Opts, budget: u64, c: &mut Counts
         if !o.all && (c.eq_vars as usize >= o.eq_vars || p.work >= budget) {
             break;
         }
-        c.eq_vars += 1;
         epoch += 1;
-        if !equal_to(p, v, &mut on, &mut off, &mut stamp, epoch, &mut out, &mut c.eq_units, &mut both) {
-            continue;
+        let limit = if o.all { u64::MAX } else { budget };
+        match equal_to(p, v, &mut on, &mut off, &mut stamp, epoch, &mut out, &mut c.eq_units, &mut both, limit) {
+            Look::Cut => break,
+            Look::Fails => {
+                c.eq_vars += 1;
+                continue;
+            }
+            Look::Done => c.eq_vars += 1,
         }
         for &(h, up, down) in &out {
             if up && down {
@@ -784,7 +826,8 @@ fn equal_vars(p: &mut Prop, order: &[Lit], o: &Opts, budget: u64, c: &mut Counts
 
 /// The second literals to try with a first one `a1` whose propagation is on
 /// the trail from `mark`: the literals that cut a clause which `a1` has cut
-/// already.  With --all, every open literal after `a1`.
+/// already.  With --all, every open literal.  Either way only literals after
+/// `a1`, so that a pair is tried once and a clause is counted once a side.
 fn second_literals(p: &mut Prop, a1: Lit, mark: usize, active: &[Lit], o: &Opts, rng: &mut Rng,
                    stamp: &mut [u32], epoch: u32, out: &mut Vec<Lit>) {
     out.clear();
@@ -811,7 +854,7 @@ fn second_literals(p: &mut Prop, a1: Lit, mark: usize, active: &[Lit], o: &Opts,
             }
             for k in a..b {
                 let x = p.lits[k];
-                if p.val[x as usize] == 0 && stamp[(x ^ 1) as usize] != epoch {
+                if p.val[x as usize] == 0 && (x ^ 1) > a1 && stamp[(x ^ 1) as usize] != epoch {
                     stamp[(x ^ 1) as usize] = epoch;
                     out.push(x ^ 1);
                 }
@@ -1108,6 +1151,29 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
     Ok(line)
 }
 
+/// The formula as it was read, then the added clauses: two literals, or one
+/// (the second is then 0).
+fn write_formula(out: &str, f: &Formula, added: &[(Lit, Lit)]) -> Result<(), String> {
+    let fh = File::create(out).map_err(|e| format!("{out}: {e}"))?;
+    let mut w = BufWriter::new(fh);
+    let io = |e: std::io::Error| e.to_string();
+    writeln!(w, "p cnf {} {}", f.nv, f.n_clauses + added.len()).map_err(io)?;
+    for c in &f.clauses {
+        for &l in c {
+            write!(w, "{} ", dimacs(l)).map_err(io)?;
+        }
+        writeln!(w, "0").map_err(io)?;
+    }
+    for &(a, b) in added {
+        if b == 0 {
+            writeln!(w, "{} 0", dimacs(a)).map_err(io)?;
+        } else {
+            writeln!(w, "{} {} 0", dimacs(a), dimacs(b)).map_err(io)?;
+        }
+    }
+    w.flush().map_err(io)
+}
+
 /// FILE plus the missing side of every one-way root clause, pass after pass
 /// until a pass adds nothing.  A root clause "not s or m" is added when
 /// setting m false does not set s false; it is added at once, so what
@@ -1116,7 +1182,8 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
 fn close(path: &str, out: &str, o: &Opts) -> Result<String, String> {
     let f = read_cnf(path, o.max_clauses)?;
     let Some((mut p, _units)) = load(&f) else {
-        return Ok("c oneway-close status=root-conflict".into());
+        write_formula(out, &f, &[])?;
+        return Ok("c oneway-close status=root-conflict added=0".into());
     };
     let active = active_literals(&p);
     let mut added: Vec<(Lit, Lit)> = Vec::new();
@@ -1164,20 +1231,7 @@ fn close(path: &str, out: &str, o: &Opts) -> Result<String, String> {
             break;
         }
     }
-    let fh = File::create(out).map_err(|e| format!("{out}: {e}"))?;
-    let mut w = BufWriter::new(fh);
-    let io = |e: std::io::Error| e.to_string();
-    writeln!(w, "p cnf {} {}", f.nv, f.n_clauses + added.len()).map_err(io)?;
-    for c in &f.clauses {
-        for &l in c {
-            write!(w, "{} ", dimacs(l)).map_err(io)?;
-        }
-        writeln!(w, "0").map_err(io)?;
-    }
-    for &(a, b) in &added {
-        writeln!(w, "{} {} 0", dimacs(a), dimacs(b)).map_err(io)?;
-    }
-    w.flush().map_err(io)?;
+    write_formula(out, &f, &added)?;
     let by_pass: Vec<String> = by_pass.iter().map(|n| n.to_string()).collect();
     Ok(format!(
         "c oneway-close status={status} vars={} clauses={} active={} failed={failed} hidden_unit={hidden_units} added={} passes={passes} by_pass={} work={}",
@@ -1196,7 +1250,8 @@ fn close(path: &str, out: &str, o: &Opts) -> Result<String, String> {
 fn equal(path: &str, out: &str, o: &Opts) -> Result<String, String> {
     let f = read_cnf(path, o.max_clauses)?;
     let Some((mut p, _units)) = load(&f) else {
-        return Ok("c oneway-equal status=root-conflict".into());
+        write_formula(out, &f, &[])?;
+        return Ok("c oneway-equal status=root-conflict added=0".into());
     };
     let active = active_literals(&p);
     let n = 2 * p.nv + 2;
@@ -1225,8 +1280,13 @@ fn equal(path: &str, out: &str, o: &Opts) -> Result<String, String> {
             if p.val[l as usize] != 0 {
                 continue; // set by a unit found on the way
             }
-            if !equal_to(&mut p, l, &mut on, &mut off, &mut stamp, epoch, &mut found, &mut units, &mut both) {
-                continue;
+            match equal_to(&mut p, l, &mut on, &mut off, &mut stamp, epoch, &mut found, &mut units, &mut both, o.work) {
+                Look::Cut => {
+                    status = "stopped";
+                    break 'all;
+                }
+                Look::Fails => continue,
+                Look::Done => {}
             }
             // a literal u that follows l on and l off is true in every model.  "not l or u"
             // and "l or u" each follow by propagation, and u from the two.
@@ -1282,24 +1342,7 @@ fn equal(path: &str, out: &str, o: &Opts) -> Result<String, String> {
             break;
         }
     }
-    let fh = File::create(out).map_err(|e| format!("{out}: {e}"))?;
-    let mut w = BufWriter::new(fh);
-    let io = |e: std::io::Error| e.to_string();
-    writeln!(w, "p cnf {} {}", f.nv, f.n_clauses + added.len()).map_err(io)?;
-    for c in &f.clauses {
-        for &l in c {
-            write!(w, "{} ", dimacs(l)).map_err(io)?;
-        }
-        writeln!(w, "0").map_err(io)?;
-    }
-    for &(a, b) in &added {
-        if b == 0 {
-            writeln!(w, "{} 0", dimacs(a)).map_err(io)?;
-        } else {
-            writeln!(w, "{} {} 0", dimacs(a), dimacs(b)).map_err(io)?;
-        }
-    }
-    w.flush().map_err(io)?;
+    write_formula(out, &f, &added)?;
     let by_pass: Vec<String> = by_pass.iter().map(|n| n.to_string()).collect();
     let _ = units;
     Ok(format!(
@@ -1434,5 +1477,45 @@ mod tests {
         let mut c = Counts::default();
         equal_vars(&mut p, &active, &o, u64::MAX, &mut c);
         assert_eq!(c.eq_hidden, 1);
+    }
+
+    #[test]
+    fn a_pair_is_tried_once_when_sampled_too() {
+        // one clause of three: sampled with room for everything, it is one clause seen from three sides
+        let f = formula(3, &[&[1, 2, 3]]);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { probe_sources: 100, probe_pairs: 100, joint: 100, ..Default::default() };
+        let mut rng = Rng::new(1);
+        let mut c = Counts::default();
+        probe(&mut p, &active, &active, &o, &mut rng, u64::MAX, &mut c);
+        assert_eq!(c.t_inst[3] / 3.0, 1.0);
+        assert_eq!(c.t_inst[1] + c.t_inst[2], 0.0);
+    }
+
+    #[test]
+    fn the_work_limit_holds_inside_one_variable() {
+        // 1,000 variables all equal: one variable has 999 equal ones, each two propagations of 1,000
+        let mut cls: Vec<Vec<i64>> = Vec::new();
+        for v in 1..1000i64 {
+            cls.push(vec![-v, v + 1]);
+            cls.push(vec![v, -(v + 1)]);
+        }
+        let refs: Vec<&[i64]> = cls.iter().map(|c| c.as_slice()).collect();
+        let f = formula(1000, &refs);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { eq_vars: 1000, ..Default::default() };
+        let mut c = Counts::default();
+        equal_vars(&mut p, &active, &o, 20_000, &mut c);
+        // the first two propagations (2,000 each way) run to their end; the limit then cuts the look
+        assert!(p.work < 60_000, "work {}", p.work);
+        assert_eq!((c.eq_vars, c.eq_hidden, c.eq_two_way_inst), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_clause_without_its_closing_zero_is_refused() {
+        assert!(parse_dimacs("p cnf 2 1\n1 2\n".as_bytes(), 10).is_err());
+        assert_eq!(parse_dimacs("p cnf 2 1\n1 2 0\n".as_bytes(), 10).unwrap().n_clauses, 1);
     }
 }

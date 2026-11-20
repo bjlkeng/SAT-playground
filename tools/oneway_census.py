@@ -346,6 +346,24 @@ def selftest(a):
             assert "holdout" in str(e)
         r = subprocess.run([str(BIN), "measure", str(HOLDOUT / "x.cnf")], capture_output=True, text=True)
         assert r.returncode != 0
+        # a formula that its own units refute is written out as it is, and said to be so
+        write_cnf(f, 2, [[1], [-1], [1, 2]])
+        for cmd in ("close", "equal"):
+            if g.exists():
+                g.unlink()
+            r = subprocess.run([str(BIN), cmd, str(f), str(g)], capture_output=True, text=True)
+            assert r.returncode == 0 and "status=root-conflict" in r.stdout, (cmd, r.stdout, r.stderr)
+            assert read_cnf(g)[1] == [[1], [-1], [1, 2]], cmd
+        # a packed file that does not unpack to its end is no formula
+        import lzma
+        whole = lzma.compress(("p cnf 3 2\n" + "1 2 3 0\n" * 4000).encode())
+        cut = d / "cut.cnf.xz"
+        cut.write_bytes(whole[:len(whole) // 2])
+        r = subprocess.run([str(BIN), "measure", str(cut)], capture_output=True, text=True)
+        assert r.returncode != 0 and "c oneway" not in r.stdout, (r.returncode, r.stdout[:200])
+        good = d / "good.cnf.xz"
+        good.write_bytes(whole)
+        assert measure(good, ["--all"])["clauses"] == "4000"
         # Rust against Python on the Z3 catalog's small records
         import z3_catalog as zc
         recs = [r for r in zc.load(zc.CATALOG) if r["n_vars"] <= a.max_vars]
