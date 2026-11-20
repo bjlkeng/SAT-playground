@@ -681,6 +681,7 @@ fn binary_sides(p: &mut Prop, order: &[Lit], o: &Opts, rng: &mut Rng, budget: u6
     let mut imp: Vec<Lit> = Vec::new();
     let mut roots: Vec<Lit> = Vec::new();
     let mut one_way_roots: Vec<Lit> = Vec::new();
+    let mut one_way_targets: Vec<Lit> = Vec::new();
     let nk = kinds.map_or(0, |k| k.1.len());
     for &s in order {
         if !o.all && (c.sources as usize >= o.sources || p.work >= budget) {
@@ -716,6 +717,36 @@ fn binary_sides(p: &mut Prop, order: &[Lit], o: &Opts, rng: &mut Rng, budget: u6
         if cut {
             break;
         }
+        // a sample of what the source sets, each asked from its other side; cut short by
+        // the work limit, the source does not count either
+        let k = if o.all { imp.len() } else { o.targets.min(imp.len()) };
+        if k > 0 && k < imp.len() {
+            rng.sample_front(&mut imp, k);
+        }
+        let weight = if k > 0 { imp.len() as f64 / k as f64 } else { 0.0 };
+        let (mut w_unit, mut w_two) = (0f64, 0f64);
+        one_way_targets.clear();
+        for &m in &imp[..k] {
+            if !o.all && p.work >= budget {
+                cut = true;
+                break;
+            }
+            let mark = p.trail.len();
+            let bad = p.assume(m ^ 1);
+            let seen = !bad && p.val[(s ^ 1) as usize] == 1;
+            p.undo(mark);
+            if bad {
+                w_unit += weight;
+            } else if seen {
+                w_two += weight;
+            } else {
+                one_way_targets.push(m);
+            }
+        }
+        if cut {
+            break;
+        }
+        // the source is whole: it counts
         c.sources += 1;
         c.roots_unit += r_unit;
         c.roots_two_way += r_two;
@@ -730,35 +761,16 @@ fn binary_sides(p: &mut Prop, order: &[Lit], o: &Opts, rng: &mut Rng, budget: u6
         }
         c.seen += imp.len() as f64;
         c.seen_max = c.seen_max.max(imp.len());
-        if imp.is_empty() {
-            continue;
-        }
-        let k = if o.all { imp.len() } else { o.targets.min(imp.len()) };
-        if k == 0 {
-            continue;
-        }
-        if k < imp.len() {
-            rng.sample_front(&mut imp, k);
-        }
-        let weight = imp.len() as f64 / k as f64;
-        for &m in &imp[..k] {
-            c.checked += 1;
-            let mark = p.trail.len();
-            let bad = p.assume(m ^ 1);
-            let seen = !bad && p.val[(s ^ 1) as usize] == 1;
-            p.undo(mark);
-            if bad {
-                c.hidden_unit += weight;
-            } else if seen {
-                c.two_way_inst += weight;
-            } else {
-                c.one_way += weight;
-                if c.examples.len() < o.examples {
-                    c.examples.push((s, m));
-                }
-                if let Some((kind, _)) = kinds {
-                    by_kind[kind[(s >> 1) as usize] as usize * nk + kind[(m >> 1) as usize] as usize] += weight;
-                }
+        c.checked += k as u64;
+        c.hidden_unit += w_unit;
+        c.two_way_inst += w_two;
+        c.one_way += weight * one_way_targets.len() as f64;
+        for &m in &one_way_targets {
+            if c.examples.len() < o.examples {
+                c.examples.push((s, m));
+            }
+            if let Some((kind, _)) = kinds {
+                by_kind[kind[(s >> 1) as usize] as usize * nk + kind[(m >> 1) as usize] as usize] += weight;
             }
         }
     }
@@ -1105,7 +1117,11 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
         Err(e) if e == "too-large" => return Ok("c oneway status=too-large".into()),
         Err(e) => return Err(e),
     };
-    let Some((mut p, units)) = load(&f) else {
+    measure_formula(&f, o, t0)
+}
+
+fn measure_formula(f: &Formula, o: &Opts, t0: std::time::Instant) -> Result<String, String> {
+    let Some((mut p, units)) = load(f) else {
         return Ok(format!("c oneway status=root-conflict vars={} clauses={}", f.nv, f.n_clauses));
     };
     let active = active_literals(&p);
@@ -1724,5 +1740,40 @@ mod tests {
         let mut c = Counts::default();
         probe(&mut p, &[lit_of(1)], &active, &o, &mut rng, u64::MAX, &mut c);
         assert!(c.far.pairs > 20 && c.far.pairs < 80, "pairs {}", c.far.pairs);
+    }
+
+    #[test]
+    fn every_part_of_the_count_keeps_to_the_work_limit() {
+        // 1,000 equal variables, and the far-pair example with 300 copies of each of its
+        // variables: one propagation costs up to about 4,000.  Sample sizes far past what the
+        // limit allows.  Between two looks at the limit there are four propagations at most,
+        // and the count has three parts, each with its own share of the limit.
+        let mut cls: Vec<Vec<i64>> = Vec::new();
+        for v in 1..1000i64 {
+            cls.push(vec![-v, v + 1]);
+            cls.push(vec![v, -(v + 1)]);
+        }
+        let b = 1000i64;
+        cls.extend([vec![-(b + 1), b + 3], vec![-(b + 1), b + 4], vec![-(b + 2), b + 5], vec![-(b + 2), b + 6],
+                    vec![-(b + 3), -(b + 4), -(b + 5), -(b + 6), b + 7]]);
+        let mut next = b + 8;
+        for v in b + 1..=b + 7 {
+            for _ in 0..300 {
+                cls.push(vec![-v, next]);
+                cls.push(vec![v, -next]);
+                next += 1;
+            }
+        }
+        let refs: Vec<&[i64]> = cls.iter().map(|c| c.as_slice()).collect();
+        let f = formula((next - 1) as usize, &refs);
+        for seed in [1u64, 15] {
+            for limit in [1_000u64, 5_000, 20_000, 100_000, 500_000, 2_000_000] {
+                let o = Opts { seed, sources: 100_000, targets: 100_000, probe_sources: 100_000, probe_pairs: 1_000, joint: 1_000,
+                               eq_vars: 100_000, far_pairs: 1_000, work: limit, max_clauses: 1 << 30, ..Default::default() };
+                let line = measure_formula(&f, &o, std::time::Instant::now()).unwrap();
+                let work: u64 = line.split_whitespace().find_map(|kv| kv.strip_prefix("work=")).unwrap().parse().unwrap();
+                assert!(work <= limit + 60_000, "limit {limit} seed {seed}: work {work}");
+            }
+        }
     }
 }
