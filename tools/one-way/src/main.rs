@@ -25,10 +25,15 @@
 //!
 //!   one-way measure FILE [--all] [--seed N] [--sources N] [--targets N]
 //!           [--probe-sources N] [--probe-pairs N] [--joint N] [--work N]
-//!           [--kinds FILE] [--examples N] [--eq-vars N]
+//!           [--kinds FILE] [--examples N] [--eq-vars N] [--far-pairs N]
 //!       one line "c oneway key=value ...".  --all counts every pair and
 //!       triple (small formulas); otherwise sources, targets and pairs are
-//!       sampled, with a seed, and the counts are estimates.
+//!       sampled, with a seed, and the counts are estimates.  Pairs of
+//!       literals are sampled two ways.  Near pairs (t1, t2, t3): the second
+//!       literal cuts a clause that the first has cut; that is where joint
+//!       consequences are dense, and it is no sample of all pairs.  Far
+//!       pairs (f1, f2, f3): the second literal is any open literal, drawn
+//!       evenly; few of them have a joint consequence at all.
 //!   one-way close FILE OUT [--max-add N] [--work N]
 //!       FILE plus the missing side of every one-way root clause (below),
 //!       each added at once so that the later ones can lean on it, pass
@@ -547,6 +552,7 @@ struct Opts {
     kinds: Option<String>,
     examples: usize,
     eq_vars: usize,
+    far_pairs: usize,
 }
 
 fn parse_opts(args: &[String]) -> Result<(Vec<String>, Opts), String> {
@@ -561,6 +567,7 @@ fn parse_opts(args: &[String]) -> Result<(Vec<String>, Opts), String> {
         max_add: 5_000_000,
         max_clauses: 60_000_000,
         eq_vars: 400_000,
+        far_pairs: 8,
         ..Default::default()
     };
     let mut pos = Vec::new();
@@ -584,6 +591,7 @@ fn parse_opts(args: &[String]) -> Result<(Vec<String>, Opts), String> {
             "--max-clauses" => o.max_clauses = num(args, &mut i, &a)? as usize,
             "--examples" => o.examples = num(args, &mut i, &a)? as usize,
             "--eq-vars" => o.eq_vars = num(args, &mut i, &a)? as usize,
+            "--far-pairs" => o.far_pairs = num(args, &mut i, &a)? as usize,
             "--kinds" => {
                 i += 1;
                 o.kinds = Some(args.get(i).ok_or("--kinds needs a file")?.clone());
@@ -620,6 +628,19 @@ fn read_kinds(path: &str, nv: usize) -> Result<(Vec<u16>, Vec<String>), String> 
     Ok((kind, names))
 }
 
+/// What a sample of pairs of literals showed.
+#[derive(Default)]
+struct Tally {
+    pairs: u64,
+    pair_conflict_seen: u64,
+    pair_hidden: u64,
+    pairs_with_joint: u64,
+    joint: f64,
+    joint_checked: u64,
+    improper: f64,
+    t_inst: [f64; 4],
+}
+
 #[derive(Default)]
 struct Counts {
     sources: u64,
@@ -641,14 +662,10 @@ struct Counts {
     eq_examples: Vec<(Lit, Lit)>,
     // the probe part
     probe_sources: u64,
-    pairs: u64,
-    pair_conflict_seen: u64,
-    pair_hidden: u64,
-    pairs_with_joint: u64,
-    joint: f64,
-    joint_checked: u64,
-    improper: f64,
-    t_inst: [f64; 4],
+    /// pairs whose second literal cuts a clause the first has cut ("near"),
+    /// and pairs whose second literal is any open literal ("far")
+    near: Tally,
+    far: Tally,
     t_none: u64,
     triples: u64,
     examples: Vec<(Lit, Lit)>,
@@ -893,6 +910,7 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
     let mut in2 = vec![0u32; n];
     let mut epoch = 0u32;
     let (mut i1, mut i2, mut seconds, mut joint) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut pairs_of: Vec<(Lit, bool)> = Vec::new();
     for &a1 in order {
         if !o.all && (c.probe_sources as usize >= o.probe_sources || p.work >= budget) {
             break;
@@ -909,9 +927,26 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
         let mark = p.trail.len();
         p.assume(a1);
         second_literals(p, a1, mark, active, o, rng, &mut stamp, e1, &mut seconds);
+        pairs_of.clear();
+        pairs_of.extend(seconds.iter().map(|&a2| (a2, false)));
+        if !o.all && o.far_pairs > 0 {
+            // any open literal after a1, drawn evenly: the near pairs are where joint
+            // consequences are dense, and these say what holds over all pairs
+            let from = pairs_of.len();
+            let mut tries = 0;
+            while pairs_of.len() - from < o.far_pairs && tries < 8 * o.far_pairs {
+                tries += 1;
+                let a2 = active[rng.below(active.len())];
+                if a2 > a1 && (a2 >> 1) != (a1 >> 1) && p.val[a2 as usize] == 0
+                    && !pairs_of[from..].iter().any(|&(x, _)| x == a2)
+                {
+                    pairs_of.push((a2, true));
+                }
+            }
+        }
         p.undo(mark);
-        for si in 0..seconds.len() {
-            let a2 = seconds[si];
+        for si in 0..pairs_of.len() {
+            let (a2, far) = pairs_of[si];
             if !p.implied(a2, &mut i2) {
                 continue;
             }
@@ -920,7 +955,7 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
             for &l in &i2 {
                 in2[l as usize] = e2;
             }
-            c.pairs += 1;
+            if far { c.far.pairs += 1 } else { c.near.pairs += 1 };
             p.assume(a1);
             let mark1 = p.trail.len();
             let bad = p.assume(a2);
@@ -936,18 +971,22 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
             p.undo(mark);
             if bad {
                 // "not a1 or not a2": a1's side does not see it (a2 was open)
+                let t = if far { &mut c.far } else { &mut c.near };
                 if in2[(a1 ^ 1) as usize] == e2 {
-                    c.pair_conflict_seen += 1;
+                    t.pair_conflict_seen += 1;
                 } else {
-                    c.pair_hidden += 1;
+                    t.pair_hidden += 1;
                 }
                 continue;
             }
             if joint.is_empty() {
                 continue;
             }
-            c.pairs_with_joint += 1;
-            c.joint += joint.len() as f64;
+            {
+                let t = if far { &mut c.far } else { &mut c.near };
+                t.pairs_with_joint += 1;
+                t.joint += joint.len() as f64;
+            }
             let k = if o.all { joint.len() } else { o.joint.min(joint.len()) };
             if k == 0 {
                 continue;
@@ -958,7 +997,7 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
             let weight = joint.len() as f64 / k as f64;
             for &m in &joint[..k] {
                 // the clause "not a1 or not a2 or m", seen from m's side
-                c.joint_checked += 1;
+                if far { c.far.joint_checked += 1 } else { c.near.joint_checked += 1 };
                 let mut sides = 1usize;
                 let mut proper = true;
                 for (x, y) in [(a1, a2), (a2, a1)] {
@@ -974,10 +1013,11 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
                         break;
                     }
                 }
+                let t = if far { &mut c.far } else { &mut c.near };
                 if proper {
-                    c.t_inst[sides] += weight;
+                    t.t_inst[sides] += weight;
                 } else {
-                    c.improper += weight;
+                    t.improper += weight;
                 }
             }
         }
@@ -1102,7 +1142,9 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
          seen_all={:.0} two_way_all={:.0} one_way_all={:.0} roots={} roots_two_way={} roots_unit={} roots_all={:.0} \
          eq_vars={} eq_two_way={:.1} eq_hidden={} eq_units={} eq_hidden_all={:.0} \
          probe_sources={} pairs={} pair_one_way={} pair_hidden={} pairs_with_joint={} joint={:.0} joint_checked={} \
-         improper={:.1} t1={:.2} t2={:.2} t3={:.2} t0={} triples={} work_a={work_a} work={} seconds={:.1}",
+         improper={:.1} t1={:.2} t2={:.2} t3={:.2} t0={} triples={} \
+         far_pairs={} far_pair_one_way={} far_pair_hidden={} far_with_joint={} far_joint={:.0} far_checked={} \
+         far_improper={:.1} f1={:.2} f2={:.2} f3={:.2} work_a={work_a} work={} seconds={:.1}",
         f.nv,
         f.n_clauses,
         active.len() / 2,
@@ -1129,18 +1171,28 @@ fn measure(path: &str, o: &Opts) -> Result<String, String> {
         c.eq_units,
         c.eq_hidden as f64 * eq_scale,
         c.probe_sources,
-        c.pairs,
-        c.pair_conflict_seen,
-        c.pair_hidden,
-        c.pairs_with_joint,
-        c.joint,
-        c.joint_checked,
-        c.improper,
-        c.t_inst[1],
-        c.t_inst[2] / 2.0,
-        c.t_inst[3] / 3.0,
+        c.near.pairs,
+        c.near.pair_conflict_seen,
+        c.near.pair_hidden,
+        c.near.pairs_with_joint,
+        c.near.joint,
+        c.near.joint_checked,
+        c.near.improper,
+        c.near.t_inst[1],
+        c.near.t_inst[2] / 2.0,
+        c.near.t_inst[3] / 3.0,
         if all_triples { c.t_none.to_string() } else { "NA".into() },
         c.triples,
+        c.far.pairs,
+        c.far.pair_conflict_seen,
+        c.far.pair_hidden,
+        c.far.pairs_with_joint,
+        c.far.joint,
+        c.far.joint_checked,
+        c.far.improper,
+        c.far.t_inst[1],
+        c.far.t_inst[2] / 2.0,
+        c.far.t_inst[3] / 3.0,
         p.work,
         t0.elapsed().as_secs_f64(),
     );
@@ -1437,8 +1489,8 @@ mod tests {
         let f = formula(3, &[&[1, 2, 3]]);
         let c = counts(&f);
         assert_eq!(c.one_way, 0.0);
-        assert_eq!(c.t_inst[3] / 3.0, 1.0);
-        assert_eq!(c.t_inst[1] + c.t_inst[2], 0.0);
+        assert_eq!(c.near.t_inst[3] / 3.0, 1.0);
+        assert_eq!(c.near.t_inst[1] + c.near.t_inst[2], 0.0);
         assert_eq!(c.t_none, 0);
     }
 
@@ -1447,7 +1499,7 @@ mod tests {
         // (a or b or c), (a or b or not c): "a or b" is implied, and no side sees it
         let f = formula(3, &[&[1, 2, 3], &[1, 2, -3]]);
         let c = counts(&f);
-        assert_eq!(c.pair_hidden, 1);
+        assert_eq!(c.near.pair_hidden, 1);
         assert_eq!(c.one_way, 0.0);
     }
 
@@ -1513,8 +1565,8 @@ mod tests {
         let mut rng = Rng::new(1);
         let mut c = Counts::default();
         probe(&mut p, &active, &active, &o, &mut rng, u64::MAX, &mut c);
-        assert_eq!(c.t_inst[3] / 3.0, 1.0);
-        assert_eq!(c.t_inst[1] + c.t_inst[2], 0.0);
+        assert_eq!(c.near.t_inst[3] / 3.0, 1.0);
+        assert_eq!(c.near.t_inst[1] + c.near.t_inst[2], 0.0);
     }
 
     #[test]
@@ -1572,5 +1624,33 @@ mod tests {
         let mut c = Counts::default();
         binary_sides(&mut p, &[lit_of(1)], &o, &mut rng, u64::MAX, &mut c, None, &mut by, &mut by2);
         assert_eq!((c.sources, c.roots), (1, 200));
+    }
+
+    #[test]
+    fn far_pairs_find_what_near_pairs_cannot() {
+        // s -> a, b; t -> c, d; (not a or not b or not c or not d or m).  s and t together set
+        // m, and neither is in a clause the other cuts: only a far pair meets "not s or not t or m"
+        let f = formula(7, &[&[-1, 3], &[-1, 4], &[-2, 5], &[-2, 6], &[-3, -4, -5, -6, 7]]);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { probe_sources: 100, probe_pairs: 100, joint: 100, far_pairs: 100, ..Default::default() };
+        let mut rng = Rng::new(1);
+        let mut c = Counts::default();
+        probe(&mut p, &active, &active, &o, &mut rng, u64::MAX, &mut c);
+        let (s, t, m) = (lit_of(1), lit_of(2), lit_of(7));
+        let mut imp = Vec::new();
+        p.assume(s);
+        p.assume(t);
+        assert_eq!(p.val[m as usize], 1);
+        p.undo(0);
+        assert!(p.implied(s, &mut imp) && !imp.contains(&m));
+        // seen from m's side only: setting s and m false does not set t false
+        assert!(c.far.t_inst[1] >= 1.0, "far {:?}", c.far.t_inst);
+        assert_eq!(c.near.t_inst[1], 0.0);
+        // with everything counted the clause is there once
+        let o = Opts { all: true, ..Default::default() };
+        let mut c = Counts::default();
+        probe(&mut p, &active, &active, &o, &mut rng, u64::MAX, &mut c);
+        assert!(c.near.t_inst[1] >= 1.0);
     }
 }

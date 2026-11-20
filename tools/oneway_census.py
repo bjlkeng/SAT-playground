@@ -19,7 +19,13 @@ with no reading at all:
   three-literal clauses seen from 3, 2 or 1 of their three sides (a side:
                         two literals false, propagation sets the third), or
                         from none though the three together fail; only
-                        clauses with no two-literal part that fails
+                        clauses with no two-literal part that fails.  On a
+                        big formula these are met by sampling pairs of
+                        literals, two ways: near pairs (t1, t2, t3: the
+                        second literal cuts a clause the first has cut,
+                        where joint consequences are dense; no sample of
+                        all pairs) and far pairs (f1, f2, f3: any open
+                        literal, drawn evenly)
 
 A small example.  s -> a, s -> b and "not a or not b or m": setting s sets a
 and b, and the long clause sets m.  Setting m false leaves "not a or not b"
@@ -73,7 +79,9 @@ COLUMNS = ["stem", "status", "vars", "clauses", "units", "active", "bin", "long"
            "roots", "roots_two_way", "roots_unit", "roots_all",
            "eq_vars", "eq_two_way", "eq_hidden", "eq_units", "eq_hidden_all",
            "probe_sources", "pairs", "pair_one_way", "pair_hidden", "pairs_with_joint", "joint", "joint_checked",
-           "improper", "t1", "t2", "t3", "t0", "triples", "work_a", "work", "seconds", "wall_s", "error"]
+           "improper", "t1", "t2", "t3", "t0", "triples",
+           "far_pairs", "far_pair_one_way", "far_pair_hidden", "far_with_joint", "far_joint", "far_checked", "far_improper",
+           "f1", "f2", "f3", "work_a", "work", "seconds", "wall_s", "error"]
 
 
 def is_holdout(path):
@@ -487,7 +495,8 @@ def cmd_census(a):
     todo = [f for f in files if stem_of(f) not in done or (a.redo_errors and done[stem_of(f)].get("error"))]
     print(f"{len(files)} files, {len(files) - len(todo)} already in {out.name}, {len(todo)} to do", flush=True)
     extra = ["--seed", a.seed, "--work", a.work, "--sources", a.sources, "--targets", a.targets,
-             "--probe-sources", a.probe_sources, "--probe-pairs", a.probe_pairs, "--joint", a.joint, "--eq-vars", a.eq_vars]
+             "--probe-sources", a.probe_sources, "--probe-pairs", a.probe_pairs, "--joint", a.joint, "--eq-vars", a.eq_vars,
+             "--far-pairs", a.far_pairs]
     queue = None
     if a.cores:
         cores = cores_of(a.cores)
@@ -564,7 +573,7 @@ def cmd_report(a):
 
     print(f"\n{'family':40s} files | with a hidden equal variable; such pairs a variable: middle, most | "
           f"of the two-literal clauses propagation sees, the share seen from one side only: middle | one-way root clauses a variable: middle | "
-          f"three-literal clauses not seen from every side: middle share")
+          f"three-literal clauses met by near pairs, not seen from every side: middle share")
     table = []
     for name, rs in by.items():
         have = [r for r in rs if num(r, "eq_hidden") > 0]
@@ -663,7 +672,7 @@ def main(argv=None):
     s.add_argument("--timeout", type=int, default=3600)
     s.add_argument("--redo-errors", action="store_true")
     for name, default in (("seed", 1), ("work", 4_000_000_000), ("sources", 4_000), ("targets", 8),
-                          ("probe-sources", 300), ("probe-pairs", 8), ("joint", 4), ("eq-vars", 400_000)):
+                          ("probe-sources", 300), ("probe-pairs", 8), ("joint", 4), ("eq-vars", 400_000), ("far-pairs", 8)):
         s.add_argument(f"--{name}", type=int, default=default)
     s = sub.add_parser("report")
     s.add_argument("tables", nargs="+")
