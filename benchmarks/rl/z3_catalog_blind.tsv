@@ -1,0 +1,11 @@
+primitive	records	records_pass	clauses_pass	records_equal	clauses_equal	records_close	clauses_close	test_need	test_before	test_pass	test_equal	test_close	test_and_1_need	test_and_1_before	test_and_1_pass	test_and_1_equal	test_and_1_close	test_and_2_need	test_and_2_before	test_and_2_pass	test_and_2_equal	test_and_2_close	no_test_1_need	no_test_1_before	no_test_1_pass	no_test_1_equal	no_test_1_close	no_test_2_need	no_test_2_before	no_test_2_pass	no_test_2_equal	no_test_2_close
+one integer and its tests	109	73	2292	109	4599	109	8271	2760	689	1954	2422	2748	592	109	383	403	504	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+the pyramid's channel	10	8	967	10	1409	10	3182	1440	480	1248	1295	1440	0	0	0	0	0	30	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+two integers	59	40	752	59	1463	59	6669	1160	510	704	751	1088	3150	1105	1632	1842	2331	282	77	114	118	163	0	0	0	0	0	0	0	0	0	0
+three integers	23	4	40	17	335	23	7744	546	300	305	305	523	2412	936	993	1004	1506	3084	966	992	1009	1493	0	0	0	0	0	0	0	0	0	0
+constraints with no test	17	3	70	15	312	17	884	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	244	56	72	94	126	96	0	12	12	12
+if-then-else chains	17	2	23	10	207	13	1014	144	24	40	74	122	704	307	314	337	573	168	160	160	160	160	112	0	6	0	62	72	6	8	6	64
+counts over plain Booleans	40	0	0	0	0	40	5295	405	405	405	405	405	1800	1680	1680	1680	1680	3150	2520	2520	2520	2574	0	0	0	0	0	0	0	0	0	0
+weighted sums over plain Booleans	12	0	0	3	34	12	3907	224	193	193	193	206	1040	647	647	647	723	1128	693	693	697	838	0	0	0	0	0	0	0	0	0	0
+a choice among k values	9	0	0	6	34	6	17	76	66	66	72	72	148	96	96	96	96	66	38	38	42	42	12	0	0	0	0	24	0	0	0	0
+all	296	130	4144	229	8393	289	36983	6755	2667	4915	5517	6604	9846	4880	5745	6009	7413	7908	4454	4517	4546	5270	368	56	78	94	188	192	6	20	18	76

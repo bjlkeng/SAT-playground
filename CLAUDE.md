@@ -176,11 +176,29 @@ work is **solver 13** and the RL scheduler on top of it.
   (pyramid cells with a model 44 v 46 of 80; the refuted ones 0.963 of the
   work); on the 69 prior-year files it changes, 76 v 76. Two-seed runs
   before that had looked like a gain (31 v 28) and were luck. The pass covers
-  that one primitive only. Z3's other encodings (orders and sums over
-  several numbers, sums written with adders, which 12 of the 20 pyramid
-  cells hold as face counts, and binary-coded choices) were studied on toys:
-  no engine was built and **none was tested in a search**, so that is an
-  open question, not a measured no-go. Whether anything of it
+  that one primitive only. A second round (2026-11-19/20, beads `d96.9.8` to
+  `d96.9.12`; solver README, "A reader that is blind to the encoding") made
+  the reading general, as tools, and measured it. `tools/one-way` with
+  `tools/oneway_census.py` counts from which sides propagation sees an
+  implied clause, and finds hidden equal variables: set a variable on, then
+  off; a literal that follows both times is equal to it. That blind step
+  finds the pass's links on all 27 cells with no reading of numbers. It
+  finds a hidden equal variable on 160 of the 381 cells measured of 2025
+  and on 656 of 1,751 prior files (`benchmarks/rl/oneway_2025.tsv`,
+  `oneway_prior.tsv`). `tools/enc_catalog.py` has 140 toys of the usual
+  encodings (PySAT, venv `~/.cache/sat13-enc/venv`): most lose nothing;
+  binary-coded numbers, adders and a clause a forbidden pair lose what no
+  two-literal clause gives back. `tools/sum_read.py` reads sums written with
+  adders: the face counts of the pyramid lose 91% of what a bound rules out.
+  **In a search none of it paid**: the orders between labels as clauses (run
+  7: 61 v 58 solved runs of 92, refuted cells 0.990 of the work), the face
+  counts made to propagate (run 8: 37 v 39 of 48), the blind step on 24
+  cells of other families (run 9: 63 v 64 of 76). The blind step also costs
+  minutes where the pass costs seconds. **A rewritten file can blind a
+  reader of the solver that goes by shape** (three sorter miters lost their
+  sorter pass in run 9): before trusting a file-rewrite test, compare the
+  structure stage's lines of both arms
+  (`log/sorted-bits-2026-11-18/timing/stage_diff.py`). Whether anything of it
   goes on by default is the owner's call (bead `d96.9.7`). Solver README,
   "Numbers stored as sorted bits". The pass's rules are in `CONVENTIONS.md`
   ("The number pass"): after a change to what a reader takes, every target

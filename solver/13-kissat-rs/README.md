@@ -8793,8 +8793,12 @@ solves 76 runs against 76 ("The runs" below). The 15 against 14 above, and a
 solver as an option, off by default, and as the census tool. It covers that
 one primitive, a sorted-bit number under a count. Z3's other encodings
 (orders and sums over several numbers, sums written with adders,
-binary-coded choices) were studied on toys only: no engine was built and
-none was tested in a search ("Z3's other primitives" below).
+binary-coded choices) were first studied on toys only ("Z3's other
+primitives" below). A second round made the reading general and measured
+it, in toys, on both suites and in three more runs ("A reader that is blind
+to the encoding", the section after this one): the pass's links can be
+found with no reading of numbers, the same pattern is on four cells in ten,
+and none of it makes the search faster.
 
 ### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
 
@@ -9444,6 +9448,12 @@ faster. On that evidence a further gap of the same kind is a poor bet, and
 the bet was not made. Whether to measure further is the owner's call (bead
 `d96.9.7`).
 
+**Since then (2026-11-19/20).** The owner asked for the measuring. The pair
+clauses were given to a search (run 7), the face counts were read and made
+to propagate (run 8), the reading was made blind to the encoding and run on
+other families (run 9), and both suites were counted: "A reader that is
+blind to the encoding" below. None of it makes the search faster.
+
 ### The runs: the added clauses do not make the search faster (2026-11-19; bead `SAT-playground-d96.9.6`)
 
 **The question.** With the pass's clauses in, a placement of the pyramid
@@ -9604,6 +9614,622 @@ check). The other refutations of these runs were not written out as proofs.
 built to do, and the thing it does is not what these cells lack. It stays
 in the solver as an option (`--structnum=1`, off) and as the census tool.
 The owner's decision is bead `d96.9.7`.
+
+## A reader that is blind to the encoding (2026-11-19/20; beads `SAT-playground-d96.9.8` to `d96.9.12`)
+
+The number pass above reads one thing Z3 writes. The owner asked (2026-11-19)
+for the reader to be general: for encodings that might happen, not Z3's
+sorted bits only; for the analysis that was left open (the orders between
+labels, the face counts); and for a look at whether other instances have the
+same patterns. This section is that analysis. No solver code changed.
+
+**What came out.**
+1. *The pass's links need no reading of numbers.* Set a variable on, then
+   off. A literal that follows it both times is equal to it in every model.
+   When that literal's own side does not see the equality, it is hidden, and
+   its missing halves are two two-literal clauses. On the toy of the reader
+   those are exactly the reader's four clauses. On the Z3 catalog this blind
+   step gives back more than the pass, and on the pyramid cells the same
+   (tables below).
+2. *Propagation that runs one way is the rule, not a quirk of Z3.* On the
+   2025 suite a hidden equal variable is on 160 of the 381 cells measured, in
+   43 of 94 families, and on 656 of the 1,751 files measured of 2020 to
+   2024; the pyramid family is sixth in 2025 by how many it has a variable.
+3. *Three things lose propagation that no added two-literal clause gives
+   back*: numbers in binary digits, sums written with adders (the pyramid's
+   face counts lose 91% of what a bound rules out), and a clause a forbidden
+   pair of values.
+4. *In a search none of it has paid.* The orders between labels as clauses
+   (run 7: 61 solved runs against 58 of 92, the refuted cells 0.990 of the
+   work), the face counts made to propagate (run 8: 37 against 39 of 48,
+   refuted 0.989) and the blind step on 24 cells of other families (run 9:
+   63 against 64 of 76 where the solver's own readers see the same file
+   either way, refuted 1.031) all come out as the pass did in run 4.
+5. *A rewritten file is not the cell plus a harmless extra.* The solver's
+   own readers see the added clauses. Three sorter miters lost their sorter
+   pass in run 9 and went from 0.1G of work to 20G and more.
+
+### One-way propagation, and how it is counted
+
+**The idea.** Unit propagation is the solver's cheap rule: when every
+literal of a clause but one is false, the last one is true. Take a clause
+the formula implies, say "not P or b". It has two sides. From P's side: set
+P, and propagation sets b. From b's side: set b false, and propagation sets
+P false. An encoding can give one side and not the other. `tools/one-way`
+(Rust) counts, for any formula and with no knowledge of how it was written:
+
+- *two-literal clauses* that propagation sees from both sides (two-way),
+  from one (one-way), or from none though setting both literals false makes
+  it fail (hidden: one probe shows it);
+- *three-literal clauses* by how many of their three sides see them (a side:
+  two literals false, propagation sets the third);
+- *root clauses*. One missing link makes many one-way pairs: everything
+  above it against everything below it. So the clauses that the others
+  follow from are counted too. When s sets m through a clause of three or
+  more, and s itself is the lowest literal above all that clause's false
+  literals, "not s or m" is a root clause (a hyper-binary resolvent, in
+  solver terms);
+- *hidden equal variables*, as in point 1 above, and the literals that
+  follow a variable set on and set off alike (true in every model).
+
+**A worked example: the reader's toy.** x in 0..3 as sorted bits g1, g2, g3
+(g3 -> g2 -> g1), a count with the helpers h1 ("at least one bit"), h2 ("at
+least two"), h3 ("all three"), and T <-> (x = 2), written as "h2 and not
+h3". 7 variables, 19 clauses.
+
+| what is asked | what comes out |
+|---|---|
+| g2 on | g1 by the chain; then "at least two": h2 on |
+| g2 off | g3 off by the chain; at most one bit is left: h2 off |
+| so | h2 follows g2 both ways: h2 = g2 |
+| h2 on | no bit. "At least two of three" does not say which two |
+| h2 off | T off, and no bit |
+| so | the equality is hidden: propagation computes h2 from g2 and not g2 from h2 |
+
+The same holds for h1 = g1 and h3 = g3. The missing halves of the three
+equalities are "h1 -> g1", "h2 -> g2", "g2 -> h2" and "not h3 -> not g3":
+the four clauses the number reader adds, found here without knowing that
+g1, g2, g3 are a number. With them T sets g1, g2 and not g3. Counted over
+all pairs of literals, the toy has 12 two-way and 12 one-way two-literal
+clauses; the other eight one-way ones follow from those four (such as "T ->
+g2": T sets h2, and h2 did not set g2).
+
+**Two closing steps**, for timing tests by rewriting a file
+(`one-way equal`, `one-way close`): the first adds the missing halves of the
+hidden equal variables and the units; the second adds the missing side of
+every one-way root clause, pass after pass until nothing is added. Each
+added clause follows by unit propagation from the clauses before it (RUP).
+
+**Checks** (`python3 tools/oneway_census.py selftest`; `cargo test` in
+`tools/one-way`, 15 tests). `tools/oneway_census.py` has the same count in
+plain Python, every pair and every triple by brute force. The Rust tool
+equals it on every count on 76 records of the Z3 catalog (those of at most
+30 variables): 4,272 two-way, 5,321 one-way and 325 hidden two-literal
+clauses; three-literal clauses seen from three, two, one and no side: 1,757,
+1,963, 7,281 and 1,099; 458 hidden equal variables. On every one of them
+closing leaves no one-way pair, and every added clause is checked to follow
+by propagation. On a big formula the counts are estimates from a sample
+with a seed (4,000 literals as sources, 8 consequences each; every variable
+that the work limit allows, up to 400,000, for the equal variables). Pairs
+of literals for the three-literal clauses are sampled two ways: *near*
+pairs (the second literal cuts a clause the first has cut: that is where
+joint consequences are dense, and it is no sample of all pairs) and *far*
+pairs (any open literal, drawn evenly).
+
+**What the count is not.** It sees what one probe can show. A consequence
+that needs a case split is not counted (the catalog's count, which knows the
+meaning, is the measure for that; next table). A one-way pair is not a
+fault by itself: an encoder that writes a helper in one direction only
+("if these bits, then v") makes them on purpose.
+
+### The Z3 catalog, read blind
+
+For each of the 296 toys three sets of clauses are added in turn, and the
+catalog's own count is made each time: of the input literals that should
+follow in a situation, how many propagation sets
+(`log/sorted-bits-2026-11-18/oneway/catalog_blind.py`; pass of build `13-j42`).
+
+| primitive | toys | clauses added: the pass, equal variables, root clauses | from a test alone: should follow, set as it is, with the pass, with the equal variables, with the root clauses | from a test and one more input literal |
+|---|---|---|---|---|
+| one integer and its tests | 109 | 2,292, 4,599, 8,271 | 2,760: 689, 1,954, 2,422, 2,748 | 592: 109, 383, 403, 504 |
+| the pyramid's channel | 10 | 967, 1,409, 3,182 | 1,440: 480, 1,248, 1,295, 1,440 |  |
+| two integers | 59 | 752, 1,463, 6,669 | 1,160: 510, 704, 751, 1,088 | 3,150: 1,105, 1,632, 1,842, 2,331 |
+| three integers | 23 | 40, 335, 7,744 | 546: 300, 305, 305, 523 | 2,412: 936, 993, 1,004, 1,506 |
+| constraints with no test | 17 | 70, 312, 884 |  |  |
+| if-then-else chains | 17 | 23, 207, 1,014 | 144: 24, 40, 74, 122 | 704: 307, 314, 337, 573 |
+| counts over plain Booleans | 40 | 0, 0, 5,295 | 405: 405, 405, 405, 405 | 1,800: 1,680, 1,680, 1,680, 1,680 |
+| weighted sums over plain Booleans | 12 | 0, 34, 3,907 | 224: 193, 193, 193, 206 | 1,040: 647, 647, 647, 723 |
+| a choice among k values | 9 | 0, 34, 17 | 76: 66, 66, 72, 72 | 148: 96, 96, 96, 96 |
+| all | 296 | 4,144, 8,393, 36,983 | 6,755: 2,667, 4,915, 5,517, 6,604 | 9,846: 4,880, 5,745, 6,009, 7,413 |
+
+(The 17 toys with a constraint and no test, from one input literal: 368
+should follow; 56 are set as the toys stand, 78 with the pass, 94 with the
+equal variables, 188 with the root clauses.)
+
+- *The blind equal-variables step gives back at least what the pass does
+  on every row of the table*: from a test alone 5,517 of the 6,755 literals
+  that should follow, against the pass's 4,915 and 2,667 as the toys stand. The pass
+  wants a number of three bits or more under a count; the blind step takes
+  an equality wherever propagation shows one.
+- *The root clauses close nearly all of what a test alone should set*:
+  6,604 of 6,755. They cost nine times the pass's clauses (36,983 against
+  4,144).
+- *What two literals together should set stays open in part*: 7,413 of
+  9,846 with the root clauses. That part is three-literal clauses, and no
+  two-literal clause gives it.
+
+### The usual encodings of other encoders
+
+`tools/enc_catalog.py` makes 140 toys in the Z3 catalog's format, each
+checked by brute force: counts and weighted sums over six plain Booleans in
+every encoding PySAT writes (`pysat.card`, `pysat.pb`; version pinned in
+`tools/enc/requirements.txt`, venv `~/.cache/sat13-enc/venv`), and numbers
+0..3 in three codes (one variable a value, sorted bits, binary digits) with
+a constraint between two or three of them, written by hand in six standard
+ways. Example: `sum-le-4@order-bounds` is x + y <= 4 over sorted bits as
+the clauses "x >= 2 -> y <= 2", "x >= 3 -> y <= 1" and the same from y;
+setting "x >= 3" sets "y <= 1", nothing is lost. The same constraint as
+`log-adder` (binary digits, an adder, the sums 5 and 6 forbidden) sets
+nothing when a digit of x is set.
+
+| what is encoded, how | toys | from one input literal: should follow, set as it is, with the equal variables, with the root clauses | from two input literals |
+|---|---|---|---|
+| count: pairwise (at most one, exactly one) | 2 | 60: 60, 60, 60 |  |
+| count: binary form (at most one) | 1 | 30: 30, 30, 30 |  |
+| count: ladder (at most one) | 1 | 30: 30, 30, 30 |  |
+| count: sequential counter | 8 | 60: 60, 60, 60 | 120: 120, 120, 120 |
+| count: sorting network | 8 | 60: 60, 60, 60 | 120: 120, 120, 120 |
+| count: cardinality network | 8 | 60: 60, 60, 60 | 120: 120, 120, 120 |
+| count: totalizer | 8 | 60: 60, 60, 60 | 120: 120, 120, 120 |
+| count: modulo totalizer | 8 | 60: 60, 60, 60 | 120: 16, 16, 120 |
+| count: k-cardinality modulo totalizer | 8 | 60: 60, 60, 60 | 120: 16, 16, 120 |
+| weighted sum: decision diagram | 6 | 8: 8, 8, 8 | 216: 208, 216, 216 |
+| weighted sum: totalizer | 6 | 8: 6, 8, 8 | 216: 216, 216, 216 |
+| weighted sum: sequential counter | 6 | 8: 4, 4, 4 | 216: 166, 184, 178 |
+| weighted sum: sorting network | 6 | 8: 4, 4, 4 | 216: 166, 184, 178 |
+| weighted sum: binary merge | 6 | 8: 4, 4, 4 | 216: 138, 144, 150 |
+| weighted sum: watchdog | 6 | 8: 4, 4, 4 | 216: 138, 144, 150 |
+| weighted sum: mixed radix | 6 | 8: 8, 8, 8 | 216: 100, 100, 188 |
+| weighted sum: adders | 6 | 8: 8, 8, 8 | 216: 72, 72, 72 |
+| value tests as gates: one variable a value | 1 | 20: 20, 20, 20 |  |
+| value tests as gates: sorted bits | 1 | 14: 14, 14, 14 | 4: 4, 4, 4 |
+| value tests as gates: binary digits | 1 | 8: 8, 8, 8 | 8: 8, 8, 8 |
+| numbers in sorted bits: clauses over bounds | 5 | 84: 84, 84, 84 | 69: 69, 69, 69 |
+| numbers, one variable a value: a clause a value listing its partners | 5 | 98: 98, 98, 98 | 24: 24, 24, 24 |
+| numbers, one variable a value: a clause a forbidden pair | 8 | 176: 84, 84, 98 | 219: 115, 115, 115 |
+| numbers in sorted bits: a clause a forbidden pair | 8 | 116: 34, 34, 52 | 105: 13, 13, 13 |
+| numbers in binary digits: a clause a forbidden pair | 8 | 20: 0, 0, 0 | 78: 0, 0, 0 |
+| numbers in binary digits: an adder | 3 | 14: 0, 0, 0 | 45: 0, 0, 0 |
+| all | 140 | 1,094: 868, 870, 902 | 3,000: 1,949, 2,005, 2,301 |
+
+- *Most of the usual encodings lose nothing*: pairwise, sequential counter,
+  sorting and cardinality networks, the plain totalizer, clauses over bounds
+  of sorted bits, a clause a value listing its partners (`direct-support`),
+  and value tests written as gates in any of the three codes. So what Z3
+  loses is not what sorted bits lose: it is what a count loses when it is
+  not told that its inputs are sorted.
+- *Lost, and given back by the blind steps*: the two modulo totalizers (16
+  of 120 from two literals; the root clauses give all 120).
+- *Lost, and not given back*: binary digits (nothing follows from a digit,
+  with a clause a forbidden pair or with an adder), weighted sums by adders
+  (72 of 216), a clause a forbidden pair over one variable a value (84 of
+  176: "x is not 0" should rule out "y is 3" when 3 needs 0), and weighted
+  sums in several of the other encodings, equalities above all. What is
+  missing there is a clause of three literals or more, or a case split.
+
+### The pyramid cells: the pass against the blind step
+
+For each of the 27 cells of 2025 where the number pass writes clauses, the
+file with the pass's clauses and the file with the blind step's (`one-way
+equal`: hidden equal variables and units) were made, and each one's clauses
+were asked of the other: is the clause seen from both sides there?
+(`log/sorted-bits-2026-11-18/oneway/cell_blind.py`, table `cells.tsv`.)
+
+| cell | clauses: the pass, the blind step (equal pairs, units) | the pass's clauses seen from both sides with the blind step's | the blind step's with the pass's | a placement sets its label bit, of 3,000: as it is, the pass, the blind step | one-way share of the two-literal clauses: as it is, the pass, the blind step |
+|---|---|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | 4,707, 6,732 (3,821, 364) | 4,680 | 6,692 | 623, 2,995, 2,946 | 0.76, 0.12, 0.24 |
+| `bp4_BC012_AM_FPBEQ_ZR` | 3,945, 5,090 (3,089, 180) | 3,923 | 5,041 | 592, 2,994, 2,942 | 0.74, 0.07, 0.09 |
+| `bp4_BC012_AM_IXA_LPI` | 5,111, 6,450 (3,837, 267) | 5,111 | 6,175 | 1,362, 2,965, 3,000 | 0.75, 0.13, 0.12 |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 3,953, 5,090 (3,089, 180) | 3,923 | 5,041 | 592, 2,994, 2,942 | 0.74, 0.06, 0.09 |
+| `bp4_BC012_CSO_AM_IXA` | 4,647, 6,787 (3,783, 395) | 4,644 | 6,750 | 623, 2,995, 2,946 | 0.76, 0.11, 0.26 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 3,116, 3,816 (2,347, 123) | 3,084 | 3,773 | 591, 2,994, 2,942 | 0.74, 0.09, 0.10 |
+| `bp4_BC012_CSO_IXA_LP` | 10,398, 14,333 (8,936, 404) | 10,344 | 14,069 | 602, 2,992, 2,938 | 0.79, 0.12, 0.28 |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 10,454, 14,269 (8,968, 372) | 10,378 | 14,034 | 602, 2,992, 2,938 | 0.76, 0.13, 0.23 |
+| `bp4_BC012_IXA_LPI_FPBLE` | 3,878, 4,699 (2,710, 263) | 3,878 | 4,417 | 1,362, 2,965, 3,000 | 0.75, 0.12, 0.12 |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 7,301, 9,459 (6,081, 200) | 7,301 | 9,345 | 532, 2,969, 3,000 | 0.78, 0.18, 0.17 |
+| `bp4_CB_LP_FPBLE` | 6,875, 8,916 (5,718, 199) | 6,875 | 8,818 | 527, 2,969, 3,000 | 0.76, 0.03, 0.03 |
+| `bp4_CSO_AM_IXA_LP` | 11,174, 15,716 (9,679, 497) | 11,121 | 15,445 | 608, 2,993, 2,938 | 0.76, 0.13, 0.21 |
+| `bp4_CSO_IXA_ZR` | 3,165, 3,527 (2,384, 0) | 3,165 | 3,527 | 568, 3,000, 3,000 | 0.77, 0.16, 0.20 |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | 4,769, 6,587 (4,170, 185) | 4,763 | 5,981 | - | 0.80, 0.23, 0.17 |
+| `bp4_IXA_FPBEQ_ZR` | 2,517, 2,702 (1,836, 3) | 2,517 | 2,693 | 567, 3,000, 3,000 | 0.77, 0.16, 0.15 |
+| `bp4_LPI_FPBEQ_ZR` | 3,031, 3,431 (2,199, 75) | 3,031 | 3,269 | 517, 2,930, 3,000 | 0.74, 0.02, 0.06 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 6,436, 8,601 (5,392, 257) | 6,436 | 7,998 | 569, 3,000, 3,000 | 0.77, 0.19, 0.12 |
+| `bp4_TCO_CSO_ZR` | 3,242, 3,761 (2,387, 77) | 3,242 | 3,761 | 525, 3,000, 3,000 | 0.75, 0.10, 0.08 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 2,595, 2,922 (1,833, 78) | 2,595 | 2,922 | 568, 3,000, 3,000 | 0.75, 0.13, 0.13 |
+| `bp5_CSO` | 12,685, 14,475 (8,959, 0) | 12,685 | 14,475 | 359, 3,000, 3,000 | 0.76, 0.05, 0.04 |
+| `dislog_a14_x14_n24` | 181, 441 (188, 69) | 51 | 144 | - | 0.46, 0.45, 0.39 |
+| `6s268r_Iter94` | 192, 1,880 (452, 475) | 78 | 889 | - | 0.49, 0.47, 0.53 |
+| `aaai10-planning-ipc5-pathways-17-step20` | 86, 1,398 (1,204, 64) | 86 | 189 | - | 0.17, 0.18, 0.16 |
+| `6s299b685_Iter30` | 57, 1,848 (1,254, 198) | 35 | 579 | - | 0.11, 0.14, 0.16 |
+| `intel047_Iter78` | 2, 590 (350, 80) | 2 | 234 | - | 0.33, 0.31, 0.31 |
+| `s38584` | 2, 543 (42, 167) | 2 | 474 | - | 0.25, 0.29, 0.23 |
+| `test_v7_r12_vr10_c1_s18160.smt2-stp212` | 12, 24,755 (19,004, 1,901) | 3 | 5,199 | - | 0.52, 0.68, 0.57 |
+
+- *On the pyramid cells the two do the same.* Of the pass's 114,531 clauses
+  on the 27 cells, 113,953 are seen from both sides in the file with the
+  blind step's clauses. A placement sets its label bit in 56,747 of 57,000
+  sampled cases with the pass and in 56,532 with the blind step (12,289 as
+  the cells stand; 19 cells, 3,000 cases each). Each has a little that the
+  other lacks: the pass also writes a value that no model takes as a clause
+  between two bits, which is no equality; the blind step also takes the
+  equalities of labels that an option has cut to fewer than three bits.
+- *It took no reading.* The pass finds gates, chains, bits and ends, tests
+  each chain, and cuts it to the stretch its count reads. The blind step
+  sets each variable on and off and looks at what follows both times.
+- *On the seven other cells the blind step adds far more than the pass*
+  (`test_v7...smt2`: 19,004 hidden equal pairs and 1,901 units, where the
+  pass writes 12 clauses), because the pass takes numbers under a count only.
+
+**What is left one-way after the pass**, on `bp4_CSO_IXA_ZR`
+(`oneway/roots_bp.py`, a sample of 3,000 literals as sources). As the cell
+stands, 77% of the two-literal clauses that propagation sees are seen from
+one side only, and about 2.8M root clauses stand behind them; with the
+pass's 3,165 clauses it is 16% and about 0.6M. Of the 18,184 one-way root
+clauses of the sample, 34% end in a group variable of the "each cube once"
+constraint: a placement rules out every member of a group of placements, so
+the group's OR variable goes off, and the group variable on sets nothing
+back. The other 64% end in a variable that a plain scan for AND and OR
+gates does not name. The five of those that were looked at are helpers
+that Z3 defines in one direction only ("if these bits, then v"); the inner
+variables of the orders between labels are of that kind. Neither kind is a
+number, and neither is a fault of the encoding: the first is what an OR
+gate does, the second is written that way on purpose.
+
+### The orders between labels: run 7
+
+The reader's `pair` step tries every joint value of two numbers that share a
+reader and turns what the refuted ones say about the bounds into two-literal
+clauses: 10 to 692 a cell on the 14 pyramid cells where it ran to its end.
+Run 7 gives those files to a search: each cell as `CELL.links.cnf` (the
+reader's links) and `CELL.pairs.cnf` (the same plus the pair clauses), build
+`13-j42`, the pass off, 60G of work a run, the seeds of run 4
+(`timing/summ_arms.py --a run7:jobs7.tsv:links --b run7:jobs7.tsv:pairs
+--check`).
+
+| cells | pairs of runs | solved with the links | with the pair clauses too | work PAR-2 with / without |
+|---|---|---|---|---|
+| the nine with a model | 72 | 38 | 41 | 0.955 |
+| the five refuted | 20 | 20 | 20 | 0.990 |
+| all 14 | 92 | 58 | 61 | 0.958 |
+
+How to read it. `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` finds a model on 6 of 8 seeds
+with the links and on all 8 with the pair clauses, 0.50 of the work.
+`bp4_IXA_FPBEQ_ZR` finds one on 7 of 8 both ways and needs 1.35 of the
+work. Cell by cell the ratio runs from 0.50 to 1.35, the way two seeds of
+one file do. On the refuted cells, where luck is small, it is 0.990. On the
+46 runs that both arms answer, the pair clauses cost 1.16 of the work.
+**The orders written out as two-literal clauses do not make the search
+faster.** 79 models checked, none fails; no cell with both answers. The
+solver's structure stage reads the two files of a cell alike on 13 of the
+14 cells (`timing/stage_diff.py`); on `bp4_TCO_CSO_IXA_LP_ZR` the symmetry
+pass fixes two variables with the links and none with the pair clauses, and
+5 seeds of 8 are solved either way.
+
+### The face counts: sums written with adders
+
+**The reader.** `tools/sum_read.py` reads a network of adder cells as the sum
+it computes. Gates and cells come from `tools/netlist_census.py` (a cell
+says "the sum of two or three signals = sum bit + 2 x carry bit"). Cells are
+joined where one's output is another's input, every signal gets a weight (a
+carry weighs twice its cell), and the cells' equations are added up so that
+the inner signals cancel: sum of weight x input + constant = sum of weight x
+output. Then every pattern of the outputs is set, and propagation says which
+values the formula allows: "at most c", "at least c", "exactly c".
+
+A worked example (the selftest). Inputs a, b of weight 1 and c of weight 2.
+A half adder makes a + b = s0 + 2 k0, a second one k0 + c = s1 + 2 k1, so a
++ b + 2c = s0 + 2 s1 + 4 k1. With the clauses "not k1" and "not s1 or not
+s0" the outputs may be 0, 1 or 2: the file says a + b + 2c <= 2. Setting c
+should rule out a and b. Propagation does not do it: an adder does not run
+backwards.
+
+**A sum is read only when the formula itself holds its cells.** The gate
+reading is a guess at what the clauses define. So every cell is asked of the
+formula: with its inputs set, each way, propagation must set its two output
+bits as an adder would. A network with a cell that fails is not read. (The
+first version checked the sum against the guessed gates and not against the
+clauses; Codex built a formula with a clause that holds a literal and its
+opposite, on which a sum was read that the formula does not have, and the
+rewritten file was refuted though the formula has a model. Review round 1.)
+Whatever is read from PySAT's adder toys holds in every model tried (310
+checks).
+
+**On the pyramid cells.** `bp4_TCO_IXA_FPBLE_ZR`: 321 adder cells in 64
+networks, 63 read as sums (one network has a cell that the formula does not
+hold). 19 of the sums have a constant bound: 13 over 17 inputs, 4 over 13
+and 2 over 3, most of them "at most 13" or "at most 17" with a constant of
+6 in the sum. The inputs carry the weights 1 and 2. They are no placements
+and no label bits: they are bits of small numbers that Z3 builds from the
+labels on the way, and the reader does not follow them further. The other
+sums are compared with something that is no constant, and are read as sums
+with no bound.
+
+| cell | sums with a constant bound | inputs that a bound rules out, in 3,000 walks | of them set by propagation |
+|---|---|---|---|
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 8 of 61 | 6,598 | 817 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 8 of 61 | 6,600 | 817 |
+| `bp4_AM_IXA_FPBLE` | 15 of 65 | 8,091 | 269 |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 19 of 56 | 11,625 | 125 |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | 16 of 49 | 14,049 | 840 |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 5 of 45 | 7,576 | 784 |
+| `bp4_BC012_IXA_LPI_FPBLE` | 22 of 53 | 5,608 | 496 |
+| `bp4_CB_LP_FPBLE` | 13 of 42 | 9,995 | 2,276 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 19 of 63 | 11,521 | 559 |
+| all nine | | 81,663 | 6,983 |
+
+How to read a row. A walk sets the inputs of one sum, in a random order, as
+long as the bound holds. Whenever one more input would break the bound,
+that input must be off. On `bp4_BC012_CSO_IXA_LP_FPBLE` that happened 11,625
+times in 3,000 walks, and propagation had set the input 125 times. Over the
+nine cells it is 6,983 of 81,663: **91% of what a face count rules out is
+lost**, 77% to 99% a cell. (11 of the 27,000 walks ended early: what was
+set had broken the bound already and propagation had not noticed; nothing
+is asked of such a setting.) No two-literal clause gives it back (the toys
+above: weighted sums by adders, 72 of 216 with every blind step).
+
+**Not read.** The three cells with `FPBEQ` and no `FPBLE` have their face
+counts in networks with more than 14 outputs (carry-save trees that are not
+added up to one binary number); the reader stops there, since it would have
+to try every output pattern. Sums compared with a variable are read as sums
+and their comparison is not.
+
+**Run 8: the bounded sums written a second time, in a form that
+propagates.** For each of the nine cells `sum_read.py variant` appends every
+bounded sum once more as a decision diagram over the same inputs (PySAT's
+`bdd`, which lost nothing on the toys for "at most" and "at least"): 5 to
+22 sums and 758 to 4,305 clauses a cell, with new variables, saying only
+what the adders say already (`variants/CELL.sums.cnf`; the files hold on 18
+known models of three cells). Build `13-j42`, 60G of work a run, the seeds
+of run 4. The arms without the sums are run 4's own: the same files, seeds
+and limit (`timing/summ_arms.py --a run4final:jobs4.tsv:base --b
+run8:jobs8.tsv:sums --check`, and the same with `num` and `sumsnum`).
+
+| arms | cells | pairs of runs | solved as the cell stands | with the sums written again | work PAR-2 with / without |
+|---|---|---|---|---|---|
+| the number pass off | the six refuted | 24 | 24 | 24 | 0.989 |
+| the number pass off | the three with a model | 24 | 15 | 13 | 1.010 |
+| the number pass on in both | the six refuted | 24 | 24 | 24 | 0.979 |
+| the number pass on in both | the three with a model | 24 | 14 | 13 | 1.038 |
+
+How to read it. On the six refuted cells every run is solved either way,
+and the sums written again save 1% to 2% of the work: nothing. On the three
+cells with a model 13 runs find one against 15 and 14. `bp4_TCO_IXA_FPBLE_ZR`
+with the pass on goes from 3 solved seeds of 8 to 6; without the pass it
+goes from 6 to 5: that is the seeds. **A face count that propagates does
+not make the search faster.** 55 models checked, none fails; no cell with
+both answers; the solver's structure stage reads the rewritten files as it
+reads the cells (`timing/stage_diff.py`).
+
+### Census: which other instances have the same patterns
+
+`tools/oneway_census.py census` runs the measure on every cell of the 2025
+suite and on every file of the main tracks of 2020 to 2024 (the 2026 suite
+is never read), a row a file (`log/sorted-bits-2026-11-18/oneway/census/`;
+`tools/oneway_census.py report TABLE` sums them by family). A work limit of
+4G a file: 4,000 literals as sources, and the equal variables of as many
+variables as the limit allows, up to 400,000.
+
+**A row, as an example.** `sudoku-N30-12`: 841,279 open variables; of the
+69,406 looked at, 4,845 have a hidden equal partner, which makes 58,727 for
+the file; 59% of the two-literal clauses that propagation sees are seen
+from one side only. What they are there: v says "none of these eight
+variables is on" (v -> not x1, ..., v -> not x8), and h is the same thing
+under another name, tied to v by "h -> v" and by one long clause "h or x1
+or ... or x8". Setting v sets h through the long clause, setting v off sets
+h off; h off leaves the long clause open and sets nothing. Two names for
+one thing, joined in one direction.
+
+**2025**: 400 files, 381 measured (11 refuted by their own units, 8 past 60M
+clauses). A hidden equal variable on 160 of them, in 43 of 94 families; more
+than one such pair a 100 variables on 63. A literal that fails by itself was
+in the sample of 182 files.
+
+| family | files | with a hidden equal variable | such pairs a variable: middle, most | one-way share: middle |
+|---|---|---|---|---|
+| pj | 5 | 5 | 4.252, 4.596 | 0.59 |
+| linked-list | 1 | 1 | 0.142, 0.142 | 0.78 |
+| sort-equivalence | 7 | 7 | 0.124, 0.161 | 0.37 |
+| sudoku | 5 | 5 | 0.074, 0.079 | 0.59 |
+| snw | 1 | 1 | 0.071, 0.071 | 0.88 |
+| bp | 20 | 20 | 0.065, 0.302 | 0.78 |
+| smt2 | 1 | 1 | 0.060, 0.060 | 0.57 |
+| anon-normalised | 5 | 5 | 0.052, 0.095 | 0.96 |
+| planning | 2 | 2 | 0.022, 0.022 | 0.20 |
+| sat-dat | 1 | 1 | 0.021, 0.021 | 0.76 |
+| bits-fast | 2 | 2 | 0.018, 0.018 | 0.69 |
+| sat03-nw | 3 | 3 | 0.017, 0.017 | 0.76 |
+| factoring | 1 | 1 | 0.016, 0.016 | 0.97 |
+| em | 2 | 2 | 0.013, 0.013 | 0.26 |
+
+**2020 to 2024**: 1,780 files, 1,751 measured (29 past 60M clauses). A
+hidden equal variable on 656 of them, in 113 of 241 families; more than one
+such pair a 100 variables on 243. A literal that fails by itself was in the
+sample of 823 files.
+
+| family | files | with a hidden equal variable | such pairs a variable: middle, most | one-way share: middle |
+|---|---|---|---|---|
+| ssp-0 (riveros) | 2 | 2 | 17.110, 17.110 | 0.15 |
+| hardware-model-checking (biere) | 13 | 11 | 2.102, 4.363 | 0.61 |
+| 01-integer-programming (riveros) | 1 | 1 | 1.455, 1.455 | 0.89 |
+| scheduling (strichman) | 3 | 3 | 1.092, 1.184 | 0.58 |
+| cryptography-cbmc (post) | 2 | 2 | 0.530, 0.530 | 0.36 |
+| diagnosis (anbulagan) | 4 | 4 | 0.402, 0.412 | 0.68 |
+| discrete-logarithm (jingchao) | 6 | 6 | 0.214, 0.495 | 0.52 |
+| algorithm-equivalence-checking (kochemazov) | 8 | 8 | 0.173, 0.370 | 0.37 |
+| scheduling (stojadinovic) | 6 | 6 | 0.166, 0.333 | 0.35 |
+| software-verification (osama) | 37 | 37 | 0.134, 0.292 | 0.71 |
+| bioinformatics (bonet) | 3 | 3 | 0.079, 0.087 | 0.00 |
+| miter (goldberg) | 3 | 2 | 0.079, 0.124 | 0.47 |
+| sudoku (zhenjiang) | 10 | 10 | 0.077, 0.079 | 0.60 |
+| cryptography (fuhs) | 2 | 2 | 0.061, 0.061 | 0.69 |
+| parity-games (friedmann) | 1 | 1 | 0.059, 0.059 | 0.79 |
+| cryptography (shaw) | 13 | 11 | 0.056, 0.362 | 0.54 |
+
+**How to read it.**
+- *The pyramid family is one of many.* By hidden equal variables a variable
+  it is sixth in 2025, behind `pj`, a linked-list cell, the sort-equivalence
+  miters, the big sudokus and a sorting-network cell.
+- *What the hidden equal variables are, where they were looked at*: helpers
+  of a count over sorted bits (Z3: the pyramid); two names for one "none of
+  these" (the sudokus); the same value of two one-variable-a-value numbers,
+  told from one of them only (`UR-15-10p0`: the third of six variables of
+  one group is the third of another); inner signals of two circuits that
+  compute the same (the sort-equivalence miters).
+- *One-way pairs are the rule.* In 2025, of the two-literal clauses that
+  propagation sees, the share it sees from one side only is 0.25 on the
+  cell in the middle, above 0.1 on 221 of the 381 cells and above 0.5 on
+  115; in 2020 to 2024 it is 0.18, 965 and 468 of 1,751. An OR gate
+  makes them (a literal that rules out all its inputs sets it off, and it
+  sets nothing back), and so does every helper that an encoder defines in
+  one direction only. So the share says little by itself; the hidden equal
+  variables are the sharper mark.
+
+**Caveats.** A sample with a seed: a file with a handful of hidden equal
+variables among a million can show none. 8 of the 400 cells of 2025 are
+past the tool's 60M clauses and 11 are refuted by their own units; 29 of
+the 1,780 prior files are past 60M clauses. Three-literal clauses are met
+by sampling pairs of literals. The far pairs, drawn evenly, meet a joint
+consequence on 291 cells of 2025 and on 1,280 prior files, and of the
+three-literal clauses they meet, 0.78 and 0.71 are not seen from every side
+(the file in the middle). The census costs 303G of work on 2025 (26 s a
+cell on average, 379 s the longest).
+
+### The blind step in a search, on other families: run 9
+
+On the pyramid cells the blind step is the pass (above), and the pass was
+run: run 4, no gain. For other families the step was run itself. 24 cells of
+2025 that are no pyramid cells, that the stock solver does not solve within
+a minute, small enough for the step to look at every variable, with the
+most hidden equal variables a variable, at most three a family
+(`oneway/equal_cells.py`). Each as it is and with the step's clauses
+(`one-way equal`: 85 to 215,118 clauses a cell), build `13-j42` with its
+defaults, seeds 2 to 5, a work limit a cell of what 1,800 s gave the stock
+solver there (30G to 80G).
+
+**Result.** `timing/stage_diff.py` first sorts the cells by whether the
+solver's structure stage reads both files alike (which pass refutes the
+formula, how many variables the symmetry pass fixes); then
+`timing/summ_arms.py --a run9:jobs9.tsv:orig --b run9:jobs9.tsv:equal
+--cells ... --check` (`timing/run9.summary.txt`).
+
+| cells | pairs of runs | solved as the cell stands | with the step's clauses | work PAR-2 with / without |
+|---|---|---|---|---|
+| read alike: 11 refuted | 44 | 44 | 44 | 1.031 |
+| read alike: 6 with a model | 24 | 20 | 19 | 1.077 |
+| read alike: 2 with no answer | 8 | 0 | 0 | 1.000 |
+| read differently: 3 sorter miters | 12 | 12 | 8 | over 1,000 |
+| read differently: 2 others | 8 | 3 | 4 | 0.807 |
+| all 24 | 96 | 79 | 75 | 1.224 |
+
+How to read it.
+- *Where the solver's readers see the same thing either way, the clauses
+  change nothing for the better*: 63 solved runs against 64, and the eleven
+  refuted cells need 1.03 of the work. Cell by cell it goes both ways on
+  four seeds each: a planning cell 0.82, the sorting-network cell 0.87 and
+  `gm16spctrc` 0.89; the three `oski` cells 1.13, 1.17 and 1.40.
+- *Three sorter miters lose their sorter pass.* `BubbleVsPancakeSort_9_4` as
+  it stands: the sorter pass reads "two swap networks of 36 and 70 units
+  over 9 words of 4 bits, both sorted" and refutes the cell in 0.07G. With
+  the 314 added clauses the pass says "no sorter miter", and the search does
+  not finish in 65G on any of four seeds. `BubbleVsPancakeSort_8_4` and
+  `PancakeVsSelectionSort_6_6` are solved, with 656 and 118 times the work.
+  The added clauses are true; they are just not what the reader's shapes
+  expect.
+- *The other two*: on `reconf10_22_queen20_3_8667` the symmetry pass fixes
+  two variables only with the clauses in (3 solved seeds become 4); on
+  `sudoku-N30-23` it fixes four where it fixed six (no answer either way).
+- 46 models checked, none fails; no cell with both answers; no run ended
+  before its work limit.
+
+**What the blind step costs.** Two propagations a variable, and two more
+for every equal partner found, over every variable. On the 24 cells
+(`oneway/equal_files/made.tsv`; one core, a loaded host):
+
+| cells | time of the step |
+|---|---|
+| three sudokus of 841,000 variables (56,500 hidden equal pairs each) | 2,300 to 2,530 s |
+| `UR-15-10p0` (stopped at its work limit, 3,214 pairs and 10,142 units so far) | 1,700 s |
+| `SAT_dat.k100-24_1_rule_2` (1.4M variables) | 691 s |
+| `gm16spctrc`, `snw_16_8_preOpt_pre` | 246 s, 122 s |
+| the other 17 | 26 s at most |
+
+On a pyramid cell it is about three minutes (`bp4_CSO_IXA_ZR`: 171 s), where
+the number pass, which looks only at the bits of numbers, takes a second or
+two (103M of work). So the blind step as it stands is a measuring tool. A
+pass of the solver would have to choose where to look, as the number pass
+does, or share its propagations the way the solver's own probing does.
+
+### Sums with a constant bound elsewhere
+
+`tools/sum_read.py census` on the 68 cells of 2025 that hold adder cells
+(`benchmarks/rl/netlist_2025.tsv`; the netlist reader gives up on 180 of the
+400 cells, so this is a lower count): 26,242 sums are read on 65 cells, and
+700 of them have a constant bound, on 29 cells. Nine are pyramid cells (125
+bounds, up to 67 inputs a sum). The other 20: one reconfiguration cell with
+371 bounds over two inputs each; circuits (`itc99`, `iscas`, a HWMCC cell:
+80 bounds), where a counter compared with a constant is ordinary logic; and
+a few with sums set equal to a constant (`dislog`, `mp1`, a parity cell, the
+sum of three cubes). No second family was found where counts are written
+with adders the way the pyramid's face counts are
+(`oneway/census/sums_2025.tsv`). The prior years were not read for sums.
+
+### What it means
+
+- *The reader is general now, as tools.* What the number pass finds by
+  reading numbers, `one-way equal` finds in any encoding by setting each
+  variable both ways. `one-way close` gives back nearly all that one literal
+  should set on Z3's toys. `sum_read.py` reads sums that are written with
+  adders. The two catalogs say which encodings lose what. `number_read.py`
+  stays the reader that names the numbers; the blind steps find the same
+  clauses and name nothing.
+- *The patterns are common.* A hidden equal variable is on 42% of the cells
+  measured of 2025 and on 37% of the files of 2020 to 2024.
+- *None of it has paid in a search.* On the pyramid cells the blind step is
+  the pass, and the pass was neutral (run 4: 127 solved runs against 132).
+  The orders between labels (run 7), the face counts made to propagate (run
+  8) and the blind step on other families (run 9) come out the same way:
+  on the refuted cells, where luck is small, the work is 0.99 of what it
+  was in run 7, 0.98 to 0.99 in run 8 and 1.03 in run 9, and the cells with
+  a model move with the seeds. The reading of run 4 stands: the search
+  learns what a propagation would have told it when it needs it.
+- *The blind step is dear.* Minutes where the number pass takes seconds
+  (above). A pass of the solver built on it would need a rule for where to
+  look.
+- *A rule for rewritten files, from run 9.* Clauses added to a file are
+  seen by the solver's own readers. Three sorter miters lost their sorter
+  pass that way. A pass that adds implied clauses belongs behind the readers
+  that go by shape, where the number pass is, and a file rewrite is a fair
+  test only where the structure stage reads both files alike
+  (`timing/stage_diff.py`).
+- *Open.* Sums compared with a variable (the `FPBEQ` cells) are not read.
+  Three-literal clauses were counted and not added. And all of this is
+  about propagation: whether a stronger proof system over the sums that are
+  read (cutting planes, as the count engine has for counts) would shorten a
+  refutation was not asked here. Run 8 says only that making the face
+  counts propagate does not.
+
+Tools: `tools/one-way` (Rust; `cargo test`, 15 tests),
+`tools/oneway_census.py` (`selftest`, `census`, `report`, `close`),
+`tools/enc_catalog.py`, `tools/sum_read.py`; tables
+`benchmarks/rl/oneway_2025.tsv`, `oneway_prior.tsv`, `sums_2025.tsv`,
+`z3_catalog_blind.tsv`, `enc_catalog.jsonl.xz`, `enc_catalog_shapes.tsv`,
+`enc_catalog_blind.tsv`, `oneway_pass_cells_2025.tsv`; scripts, job tables
+and outputs in `log/sorted-bits-2026-11-18/oneway/` and `timing/` (runs 7,
+8, 9). Codex reviewed the tools in ten rounds; the tenth was clean. The
+first nine found that a sum was read which the formula did not have (the
+cells are now asked of the formula itself), four loops of propagations
+with no look at the work limit (closed by one test that sweeps the limit),
+and five faults in sampling and in the report.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

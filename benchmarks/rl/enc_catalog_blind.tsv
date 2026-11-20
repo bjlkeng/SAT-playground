@@ -1,0 +1,28 @@
+primitive	records	records_pass	clauses_pass	records_equal	clauses_equal	records_close	clauses_close	test_need	test_before	test_pass	test_equal	test_close	test_and_1_need	test_and_1_before	test_and_1_pass	test_and_1_equal	test_and_1_close	test_and_2_need	test_and_2_before	test_and_2_pass	test_and_2_equal	test_and_2_close	no_test_1_need	no_test_1_before	no_test_1_pass	no_test_1_equal	no_test_1_close	no_test_2_need	no_test_2_before	no_test_2_pass	no_test_2_equal	no_test_2_close
+count bitwise	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	30	30	30	30	30	0	0	0	0	0
+count cardnetwrk	8	0	0	1	12	2	80	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	120	120	120	120
+count kmtotalizer	8	0	0	0	0	2	38	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	16	16	16	120
+count ladder	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	30	30	30	30	30	0	0	0	0	0
+count mtotalizer	8	0	0	0	0	2	38	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	16	16	16	120
+count pairwise	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	0	0	0	0	0
+count seqcounter	8	0	0	1	2	3	26	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	120	120	120	120
+count sortnetwrk	8	0	0	1	12	2	80	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	120	120	120	120
+count totalizer	8	1	6	2	16	2	36	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	60	60	60	60	60	120	120	120	120	120
+numbers direct-conflict	8	0	0	0	0	3	14	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	176	84	84	84	98	219	115	115	115	115
+numbers direct-support	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	98	98	98	98	98	24	24	24	24	24
+numbers log-adder	3	0	0	0	0	3	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	14	0	0	0	0	45	0	0	0	0
+numbers log-conflict	8	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	20	0	0	0	0	78	0	0	0	0
+numbers order-bounds	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	84	84	84	84	84	69	69	69	69	69
+numbers order-conflict	8	1	6	0	0	4	18	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	116	34	46	34	52	105	13	13	13	13
+tests direct	1	0	0	0	0	0	0	20	20	20	20	20	0	0	0	0	0	12	12	12	12	12	0	0	0	0	0	0	0	0	0	0
+tests log	1	0	0	0	0	0	0	8	8	8	8	8	8	8	8	8	8	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tests order	1	0	0	0	0	0	0	14	14	14	14	14	4	4	4	4	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+weighted adder	6	0	0	0	0	4	12	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	8	8	8	8	216	72	72	72	72
+weighted bdd	6	0	0	1	4	1	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	8	8	8	8	216	208	208	216	216
+weighted binmerge	6	0	0	2	26	4	44	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	4	4	4	4	216	138	138	144	150
+weighted mixedradix	6	0	0	3	9	5	80	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	8	8	8	8	216	100	100	100	188
+weighted seqcounter	6	0	0	1	17	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	4	4	4	4	216	166	166	184	178
+weighted sortnetwrk	6	1	2	2	35	2	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	4	4	4	4	216	166	166	184	178
+weighted totalizer	6	0	0	2	13	2	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	6	6	8	8	216	216	216	216	216
+weighted watchdog	6	0	0	2	25	4	47	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	8	4	4	4	4	216	138	138	144	150
+all	140	3	14	18	171	46	525	42	42	42	42	42	12	12	12	12	12	12	12	12	12	12	1052	826	838	828	860	2988	1937	1937	1993	2289
