@@ -399,10 +399,11 @@ def cmd_loss(a):
           f"set by propagation: {found}")
 
 
-def cmd_variant(a):
+def variant_clauses(n_vars, sums, encoding):
+    """Each sum with a bound written a second time by PySAT: (clauses, top
+    variable, how many of each kind).  A bound that no setting meets comes
+    back as the empty clause, and is kept as that."""
     from pysat.pb import EncType, PBEnc
-    n_vars, clauses = read_cnf(a.file)
-    sums, notes = read_sums(n_vars, clauses)
     top = n_vars
     extra = []
     kinds = Counter()
@@ -412,15 +413,22 @@ def cmd_variant(a):
             continue
         lits, weights, shift = literal_form(s)
         fn = {"le": PBEnc.leq, "ge": PBEnc.geq, "eq": PBEnc.equals}[kind]
-        cnf = fn(lits=lits, weights=weights, bound=c - shift, top_id=top, encoding=getattr(EncType, a.encoding))
+        cnf = fn(lits=lits, weights=weights, bound=c - shift, top_id=top, encoding=getattr(EncType, encoding))
         for cl in cnf.clauses:
             extra.append(list(cl))
-            top = max(top, max(abs(l) for l in cl))
+            top = max([top] + [abs(l) for l in cl])
         kinds[kind] += 1
+    return extra, top, kinds
+
+
+def cmd_variant(a):
+    n_vars, clauses = read_cnf(a.file)
+    sums, notes = read_sums(n_vars, clauses)
+    extra, top, kinds = variant_clauses(n_vars, sums, a.encoding)
     with open(a.out, "w") as fh:
         fh.write(f"p cnf {top} {len(clauses) + len(extra)}\n")
         for c in clauses + extra:
-            fh.write(" ".join(map(str, c)) + " 0\n")
+            fh.write(" ".join(map(str, c + [0])) + "\n")
     print(f"{Path(a.file).name}: {notes['sums']} sums, written again: {dict(kinds)}; {len(extra)} clauses and "
           f"{top - n_vars} variables added; wrote {a.out}")
 
@@ -528,6 +536,24 @@ def selftest(a):
     assert len(sums) == 1 and sums[0].terms == {A: 3, B: 1} and sums[0].outs == {S0: 1, S1: 2, K1: 4}, (
         dict(notes), [(s.terms, s.outs) for s in sums])
     assert sums[0].bound() == ("le", 3), sums[0].bound()
+    # a bound that nothing meets: 3a + b = 2.  The second writing is then the empty clause,
+    # and it is kept (tried only where PySAT is there: the venv of tools/enc/requirements.txt)
+    cl = base + half(A, B, S0, K0) + half(K0, A, S1, K1) + [[-S0], [S1], [-K1]]
+    sums, notes = read_sums(13, cl)
+    assert len(sums) == 1 and sums[0].bound() == ("eq", 2), (dict(notes), [s.bound() for s in sums])
+    try:
+        import pysat.pb  # noqa: F401
+        extra, top, kinds = variant_clauses(13, sums, "bdd")
+        assert [] in extra and top >= 13 and kinds == {"eq": 1}, (extra, top, kinds)
+        # and one that can be met: the second writing holds in a model of the first
+        cl2 = base + half(A, B, S0, K0) + half(K0, C, S1, K1) + [[-K1], [-S1, -S0]]
+        sums2, _notes = read_sums(13, cl2)
+        extra2, top2, _k = variant_clauses(13, sums2, "bdd")
+        q = Prop(top2, cl2 + extra2)
+        assert not q.root_conflict and q.implied([A, B, -C]) is not None and q.refutes([A, B, C])
+        with_pysat = "the second writing of a sum tried with PySAT"
+    except ImportError:
+        with_pysat = "PySAT is not here: the second writing of a sum was not tried"
     # two sums that share an input and nothing else stay two sums
     cl = base + half(A, B, S0, K0) + half(A, C, S1, K1) + [[-K0], [-K1]]
     sums, notes = read_sums(13, cl)
@@ -574,7 +600,7 @@ def selftest(a):
     assert not sums, (dict(notes), [s.text() for s in sums])
     print(f"selftest: ok (a + b + 2c <= 2 read from two half adders: of {need} inputs the bound rules out, "
           f"propagation sets {found}; a + b = 1 read from one; 3a + b with a in two columns; the sums read from "
-          f"PySAT's adder toys hold in {checks} model checks)")
+          f"PySAT's adder toys hold in {checks} model checks; {with_pysat})")
 
 
 def main(argv=None):
