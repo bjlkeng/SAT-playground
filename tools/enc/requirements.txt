@@ -1,0 +1,9 @@
+# PySAT, for tools/enc_catalog.py `build` only (bead SAT-playground-d96.9.12).
+# It writes the toys of the usual count and weighted-sum encodings; nothing
+# else needs it, and the solver never does.  The records depend on the
+# version, so it is pinned: with another version, rebuild and re-read the
+# table.  Environment: uv venv ~/.cache/sat13-enc/venv, then
+# uv pip install --python ~/.cache/sat13-enc/venv/bin/python -r tools/enc/requirements.txt
+python-sat[pb]==1.9.dev24
+pindakaas==0.6.1
+pypblib==0.0.4

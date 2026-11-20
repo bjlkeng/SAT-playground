@@ -1,0 +1,11 @@
+[package]
+name = "one-way"
+version = "0.1.0"
+edition = "2021"
+description = "From which sides does unit propagation see an implied clause? A measure blind to the encoding (bead SAT-playground-d96.9.9); a standalone tool, no solver code"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+debug = false
