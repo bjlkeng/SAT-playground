@@ -8790,7 +8790,11 @@ solves 127 runs against 132 without it, and a refutation of a pyramid cell
 takes 0.963 of the work; on the 69 files of 2020 to 2024 that it changes it
 solves 76 runs against 76 ("The runs" below). The 15 against 14 above, and a
 31 against 28 that came after it, were two seeds each. The pass stays in the
-solver as an option, off by default, and as the census tool.
+solver as an option, off by default, and as the census tool. It covers that
+one primitive, a sorted-bit number under a count. Z3's other encodings
+(orders and sums over several numbers, sums written with adders,
+binary-coded choices) were studied on toys only: no engine was built and
+none was tested in a search ("Z3's other primitives" below).
 
 ### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
 
@@ -9350,37 +9354,95 @@ clauses or more are listed one by one):
 `tools/number_read.py report TABLE...`; the run script and logs are in
 `log/sorted-bits-2026-11-18/census7/`.
 
-### Engines over the primitives: measured, none built (2026-11-19; bead `SAT-playground-d96.9.5`)
+### Z3's other primitives: studied on toys, none built, none tested in a search (2026-11-19; bead `SAT-playground-d96.9.5`)
 
-The epic's third step asked whether to build reasoning engines for three
-things Z3 writes: bounds over sums of sorted-bit numbers, weighted sums, and
-alldifferent over binary-coded values. Each was to be measured first, with a
-go or a no-go a primitive. All three are no-go.
+**The pass covers one primitive**: an integer stored as sorted bits and read
+through a count. Everything else Z3 writes was studied on the catalog's toys
+and counted in the census, and no more. No solver code reads any of it, and
+no search run tested any of it.
 
-- *Bounds between two numbers that a constraint ties* (the reader's `pair`
-  step: every joint value of two numbers that share a reader is tried, and
-  what the refuted ones say about the bounds becomes two-literal clauses).
-  On the 14 pyramid cells where the step ran to its end it adds 10 to 692
-  clauses on top of 2,536 to 6,357 links, and with the pass's clauses alone
-  a placement already sets its label bit in 2,930 to 3,000 of 3,000 cases.
-  The catalog says why: Z3 writes a sum of sorted-bit numbers as a count
-  over all their bits, and its counts over plain bits propagate in full in
-  the base setting. There is little left for an engine to add.
-- *Weighted sums by bit-vector adders* (`pb.bv` in the catalog). The reader
-  reads none of the three toys of that setting in full, and the census does
-  not look for it; the pyramid cells were written with totalizers.
+*Corrected on 2026-11-19, after the owner asked what the work covers.* The
+first version of this section was headed "measured, none built". It said of
+bounds between numbers that "there is little left for an engine to add",
+and of sums by adders that "the pyramid cells were written with
+totalizers". The first two claimed more than was measured. The third was
+wrong for 12 of the 20 cells (below).
+
+**What the pass does on each primitive of the catalog**
+(`log/sorted-bits-2026-11-18/catalog-by-primitive/by_primitive.py`: the pass
+of build `13-j42` is run by itself on each of the 296 toys as written, its
+clauses are added, and the catalog's count is made again). Of the input
+literals that should follow in a situation, how many propagation sets:
+
+| primitive | toys | the pass adds clauses on | from a test alone: should follow, set before, set with the pass | from a test and one more input literal |
+|---|---|---|---|---|
+| one integer and its tests | 109 | 73 | 2,760: 689, 1,954 | 592: 109, 383 |
+| the pyramid's channel | 10 | 8 | 1,440: 480, 1,248 | |
+| two integers (sums, differences, comparisons) | 59 | 40 | 1,160: 510, 704 | 3,150: 1,105, 1,632 |
+| three integers | 23 | 4 | 546: 300, 305 | 2,412: 936, 993 |
+| if-then-else chains | 17 | 2 | 144: 24, 40 | 704: 307, 314 |
+| counts over plain Booleans | 40 | 0 | 405: 405, 405 | 1,800: 1,680, 1,680 |
+| weighted sums over plain Booleans | 12 | 0 | 224: 193, 193 | 1,040: 647, 647 |
+| a choice among k values (binary-coded) | 9 | 0 | 76: 66, 66 | 148: 96, 96 |
+
+How to read a row. `int-eq-iff-0_3`, the catalog's example, is one of the
+109 toys of the first row: from a test alone 14 bit literals should follow,
+propagation sets 6, and with the pass's clauses all 14. A toy with a
+weighted sum over plain Booleans has no sorted bits in it; the pass adds
+nothing and the count stays where it was.
+
+So the pass closes most of what one number loses, and most of the channel,
+which is three tests on three numbers at once. It closes a part of what two
+numbers lose and next to nothing of three. On toys without sorted bits it
+adds no clause. (The 17 toys with a constraint and no test: clauses on 3;
+of 244 literals that should follow from one input literal, 56 are set
+before and 72 with the pass.)
+
+**The three engines that were considered**, and what is known of each:
+
+- *Bounds between numbers that a constraint ties.* The pyramid has such
+  constraints: one label at most another (`TCO`, `IXA`), lexicographic
+  orders over several labels (`CSO`, `AM`) and labels in first-use order
+  (`LP`, `LPI`).
+  *Measured*: the reader's `pair` step (every joint value of two numbers
+  that share a reader is tried, and what the refuted ones say about the
+  bounds becomes two-literal clauses) adds 10 to 692 clauses on top of
+  2,536 to 6,357 links, on the 14 pyramid cells where it ran to its end. So
+  the two-literal part is small.
+  *Not measured*: on the real cells, what follows only from a test and a
+  bit together (three literals and more). That is the kind the two- and
+  three-integer toys lose, and the pass leaves it open (with the pass 1,632
+  of 3,150 on two integers, 993 of 2,412 on three).
+  *Not run*: the 14 files with the pair clauses added
+  (`variants/*.pairs.cnf`) were never given to a search.
+- *Sums written with adders.* On the toys, weighted sums over plain
+  Booleans lose propagation in all 12, the pass adds nothing there, and the
+  reader reads none of the three toys of the `pb.bv` setting in full.
+  On the pyramid the value tests are totalizers, but the 12 cells with a
+  face-count option (`FPBEQ`, `FPBLE`) hold 119 to 378 full adders each and
+  the other 8 hold none (`benchmarks/rl/netlist_2025.tsv`): the compiled
+  face counts ("Reading the bp, oisc and smt2 cells" above). Neither the
+  pass nor the reader reads those sums.
+  *Not measured*: how much propagation they lose on the real cells.
+  One thing run 2 below does say: the hard cells are not the face-count
+  cells in particular. Of the ten pyramid cells with a model, the six with
+  face counts solve 26 of 48 runs without the pass, and the four without
+  them 20 of 32.
 - *Alldifferent over binary-coded values.* Binary-coded choices are common
   (97 of the 392 cells read in 2025 have one with three value tests or
   more, 229 of the 1,750 prior files), but a value test there is an AND
   gate, which propagates both ways already, and the files with the most of
   them are bounded-model-checking and software-verification files, where
   such a set of tests is a decoder. No family was found where a constraint
-  over such codes is what the search lacks.
+  over such codes is what the search lacks. The census counts the codes; it
+  does not look for a constraint over them.
 
-The stronger reason came afterwards, from the runs below: closing the gap
-that this epic set out to close did not make the search faster. An engine
-that closes a smaller gap of the same kind is not worth building on that
-evidence.
+**Why none was built.** Not because any of the three was shown to be
+useless. The reason is the runs below: closing the gap this epic set out to
+close, the one the pyramid's channel is made of, did not make the search
+faster. On that evidence a further gap of the same kind is a poor bet, and
+the bet was not made. Whether to measure further is the owner's call (bead
+`d96.9.7`).
 
 ### The runs: the added clauses do not make the search faster (2026-11-19; bead `SAT-playground-d96.9.6`)
 

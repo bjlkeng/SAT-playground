@@ -175,8 +175,12 @@ work is **solver 13** and the RL scheduler on top of it.
   work budget and up to eight seeds, 127 solved runs against 132 without it
   (pyramid cells with a model 44 v 46 of 80; the refuted ones 0.963 of the
   work); on the 69 prior-year files it changes, 76 v 76. Two-seed runs
-  before that had looked like a gain (31 v 28) and were luck. No engine over
-  Z3's other primitives was built (measured no-go). Whether anything of it
+  before that had looked like a gain (31 v 28) and were luck. The pass covers
+  that one primitive only. Z3's other encodings (orders and sums over
+  several numbers, sums written with adders, which 12 of the 20 pyramid
+  cells hold as face counts, and binary-coded choices) were studied on toys:
+  no engine was built and **none was tested in a search**, so that is an
+  open question, not a measured no-go. Whether anything of it
   goes on by default is the owner's call (bead `d96.9.7`). Solver README,
   "Numbers stored as sorted bits". The pass's rules are in `CONVENTIONS.md`
   ("The number pass"): after a change to what a reader takes, every target
