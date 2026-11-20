@@ -353,9 +353,13 @@ def loss_of(n_vars, clauses, sums, sample, rng):
     """For each sum with an upper or a lower bound: set inputs one at a time,
     in a random order, as long as the bound holds; whenever one more input
     would break it, that input must be off (or on, for a lower bound).  Of
-    those, how many does propagation set?  (need, found, situations)."""
+    those, how many does propagation set?  (need, found, walks, broken).
+    An input can set other inputs of the same sum.  When what is set already
+    breaks the bound and propagation has not noticed, the setting has no
+    model: the walk ends there, counted in `broken`, and nothing is asked of
+    it."""
     p = Prop(n_vars, clauses)
-    need = found = sit = 0
+    need = found = sit = broken = 0
     todo = [s for s in sums if s.bound()[0] in ("le", "ge", "eq")]
     for _ in range(sample):
         if not todo:
@@ -374,6 +378,9 @@ def loss_of(n_vars, clauses, sums, sample, rng):
                 # (walking down: the weights of the literals that are not off yet)
                 on = sum(w for l, w in zip(side, weights) if p.value(l) == 1)
                 total = shift + on if upper else shift + sum(weights) - on
+                if total > c if upper else total < c:
+                    broken += 1
+                    break
                 l, v = side[i], p.value(side[i])
                 if v == 1:
                     continue
@@ -388,15 +395,15 @@ def loss_of(n_vars, clauses, sums, sample, rng):
                     break               # no model this way by propagation: the walk ends here
             p.undo(mark)
             sit += 1
-    return need, found, sit
+    return need, found, sit, broken
 
 
 def cmd_loss(a):
     n_vars, clauses = read_cnf(a.file)
     sums, notes = read_sums(n_vars, clauses)
-    need, found, sit = loss_of(n_vars, clauses, sums, a.sample, random.Random(a.seed))
+    need, found, sit, broken = loss_of(n_vars, clauses, sums, a.sample, random.Random(a.seed))
     print(f"{Path(a.file).name}: {notes['sums']} sums; {sit} walks; inputs that a bound rules out: {need}, "
-          f"set by propagation: {found}")
+          f"set by propagation: {found}; walks ended because what was set broke the bound unnoticed: {broken}")
 
 
 def variant_clauses(n_vars, sums, encoding):
@@ -522,8 +529,19 @@ def selftest(a):
     p = Prop(13, cl)
     got = p.implied([C])
     assert -A not in got and -B not in got
-    need, found, _sit = loss_of(13, cl, sums, 300, random.Random(1))
+    need, found, _sit, _broken = loss_of(13, cl, sums, 300, random.Random(1))
     assert need > found >= 0, (need, found)
+    # inputs that set each other.  The sum a + 2b + 3c + 2d + e + 3f <= 6 as a bound that
+    # propagation knows nothing of (no clause holds it), with b -> c and b -> d: once b is set,
+    # b, c and d weigh 7 and nothing has noticed.  Such a walk ends there, counted apart, and
+    # nothing is asked of a setting that has no model.
+    free = Sum([], {1: 1, 2: 2, 3: 3, 4: 2, 5: 1, 6: 3}, 0, {})
+    free.allowed = set(range(7))
+    assert free.bound() == ("le", 6)
+    need3, found3, sit3, broken3 = loss_of(6, [[-2, 3], [-2, 4]], [free], 300, random.Random(1))
+    assert sit3 == 300 and broken3 > 50 and need3 > 0 and found3 == 0, (need3, found3, sit3, broken3)
+    # without those two clauses no walk is broken
+    assert loss_of(6, [[1, 2, 3, 4, 5, 6]], [free], 300, random.Random(1))[3] == 0
     # exactly 1 of a, b by one half adder: the outputs must be s = 1, k = 0
     cl = base + half(A, B, S0, K0) + [[S0], [-K0]]
     sums, notes = read_sums(11, cl)

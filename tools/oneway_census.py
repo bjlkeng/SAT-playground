@@ -381,6 +381,19 @@ def selftest(a):
         assert not looked(got, "equal") and not looked(got, "pairs")
         got = measure(f, ["--probe-sources", 0, "--sources", 10, "--eq-vars", 5])
         assert got["eq_hidden_all"] == "0" and got["one_way_all"] == "0" and looked(got, "equal") and looked(got, "pairs"), got
+        # the report: a row where no near pair met a three-literal clause has no share of them
+        n_vars, cl = number_toy()
+        write_cnf(f, n_vars, cl)
+        got = measure(f, ["--work", 300])
+        assert num(got, "t1") + num(got, "t2") + num(got, "t3") == 0, got
+        table = d / "t.tsv"
+        write_table(table, [{"stem": "toy", **got}])
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cmd_report(argparse.Namespace(tables=[str(table)], top=5, sort="equal"))
+        assert " NA" in out.getvalue(), out.getvalue()
         # Rust against Python on the Z3 catalog's small records
         import z3_catalog as zc
         recs = [r for r in zc.load(zc.CATALOG) if r["n_vars"] <= a.max_vars]
@@ -580,9 +593,12 @@ def cmd_report(a):
         t = num(r, "two_way") + num(r, "one_way")
         return num(r, "one_way") / t if t else 0.0
 
-    def tside(r):
+    def tside(r):                       # only for a row where near pairs met a three-literal clause
         t = num(r, "t1") + num(r, "t2") + num(r, "t3")
-        return (num(r, "t1") + num(r, "t2")) / t if t else 0.0
+        return (num(r, "t1") + num(r, "t2")) / t
+
+    def met(r):
+        return looked(r, "near") and num(r, "t1") + num(r, "t2") + num(r, "t3") > 0
 
     def eq(r):                          # hidden equal variables a variable
         return num(r, "eq_hidden_all") / max(num(r, "active"), 1)
@@ -598,13 +614,14 @@ def cmd_report(a):
     for name, rs in by.items():
         e = [r for r in rs if looked(r, "equal")]
         pr = [r for r in rs if looked(r, "pairs")]
-        nr = [r for r in rs if looked(r, "near")]
+        nr = [r for r in rs if met(r)]
         have = [r for r in e if num(r, "eq_hidden") > 0]
         table.append((mid(eq(r) for r in e), len(have) / max(len(e), 1), name, len(rs), len(have), max((eq(r) for r in e), default=0),
-                      mid(share(r) for r in pr), mid(roots(r) for r in pr), mid(tside(r) for r in nr)))
+                      mid(share(r) for r in pr), mid(roots(r) for r in pr), mid(tside(r) for r in nr) if nr else None))
     key = {"equal": lambda t: (-t[0], -t[1], -t[5]), "share": lambda t: -t[6], "roots": lambda t: -t[7]}[a.sort]
     for m, _f, name, k, have, top, sh, rt, ts in sorted(table, key=key)[:a.top]:
-        print(f"{name[:40]:40s} {k:5d} | {have:4d}  {m:8.4f} {top:8.4f} | {sh:7.4f} | {rt:9.2f} | {ts:7.4f}")
+        ts = "     NA" if ts is None else f"{ts:7.4f}"      # no near pair met a three-literal clause in this family
+        print(f"{name[:40]:40s} {k:5d} | {have:4d}  {m:8.4f} {top:8.4f} | {sh:7.4f} | {rt:9.2f} | {ts}")
     e = [r for r in ok if looked(r, "equal")]
     pr = [r for r in ok if looked(r, "pairs")]
     whole = sorted(share(r) for r in pr)
