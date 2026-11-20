@@ -33,7 +33,8 @@
 //!       literal cuts a clause that the first has cut; that is where joint
 //!       consequences are dense, and it is no sample of all pairs.  Far
 //!       pairs (f1, f2, f3): the second literal is any open literal, drawn
-//!       evenly; few of them have a joint consequence at all.
+//!       evenly, so that every pair is as likely as any other; few of them
+//!       have a joint consequence at all.
 //!   one-way close FILE OUT [--max-add N] [--work N]
 //!       FILE plus the missing side of every one-way root clause (below),
 //!       each added at once so that the later ones can lean on it, pass
@@ -911,7 +912,8 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
     let mut epoch = 0u32;
     let (mut i1, mut i2, mut seconds, mut joint) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut pairs_of: Vec<(Lit, bool)> = Vec::new();
-    for &a1 in order {
+    let out_of_work = |p: &Prop| !o.all && p.work >= budget;
+    'sources: for &a1 in order {
         if !o.all && (c.probe_sources as usize >= o.probe_sources || p.work >= budget) {
             break;
         }
@@ -930,22 +932,27 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
         pairs_of.clear();
         pairs_of.extend(seconds.iter().map(|&a2| (a2, false)));
         if !o.all && o.far_pairs > 0 {
-            // any open literal after a1, drawn evenly: the near pairs are where joint
-            // consequences are dense, and these say what holds over all pairs
+            // any open literal, drawn evenly, before or after a1 in the numbering: a pair
+            // can be drawn from either of its ends, every pair as likely as any other.
+            // The near pairs are where joint consequences are dense; these say what
+            // holds over all pairs.
             let from = pairs_of.len();
             let mut tries = 0;
             while pairs_of.len() - from < o.far_pairs && tries < 8 * o.far_pairs {
                 tries += 1;
                 let a2 = active[rng.below(active.len())];
-                if a2 > a1 && (a2 >> 1) != (a1 >> 1) && p.val[a2 as usize] == 0
-                    && !pairs_of[from..].iter().any(|&(x, _)| x == a2)
-                {
+                if (a2 >> 1) != (a1 >> 1) && p.val[a2 as usize] == 0 && !pairs_of[from..].iter().any(|&(x, _)| x == a2) {
                     pairs_of.push((a2, true));
                 }
             }
         }
         p.undo(mark);
         for si in 0..pairs_of.len() {
+            // one pair is counted whole or not at all: the work limit can end the look
+            // in the middle of it
+            if out_of_work(p) {
+                break 'sources;
+            }
             let (a2, far) = pairs_of[si];
             if !p.implied(a2, &mut i2) {
                 continue;
@@ -955,7 +962,7 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
             for &l in &i2 {
                 in2[l as usize] = e2;
             }
-            if far { c.far.pairs += 1 } else { c.near.pairs += 1 };
+            let mut one = Tally { pairs: 1, ..Default::default() };
             p.assume(a1);
             let mark1 = p.trail.len();
             let bad = p.assume(a2);
@@ -971,54 +978,57 @@ fn probe(p: &mut Prop, order: &[Lit], active: &[Lit], o: &Opts, rng: &mut Rng, b
             p.undo(mark);
             if bad {
                 // "not a1 or not a2": a1's side does not see it (a2 was open)
-                let t = if far { &mut c.far } else { &mut c.near };
                 if in2[(a1 ^ 1) as usize] == e2 {
-                    t.pair_conflict_seen += 1;
+                    one.pair_conflict_seen = 1;
                 } else {
-                    t.pair_hidden += 1;
+                    one.pair_hidden = 1;
                 }
-                continue;
-            }
-            if joint.is_empty() {
-                continue;
-            }
-            {
-                let t = if far { &mut c.far } else { &mut c.near };
-                t.pairs_with_joint += 1;
-                t.joint += joint.len() as f64;
-            }
-            let k = if o.all { joint.len() } else { o.joint.min(joint.len()) };
-            if k == 0 {
-                continue;
-            }
-            if k < joint.len() {
-                rng.sample_front(&mut joint, k);
-            }
-            let weight = joint.len() as f64 / k as f64;
-            for &m in &joint[..k] {
-                // the clause "not a1 or not a2 or m", seen from m's side
-                if far { c.far.joint_checked += 1 } else { c.near.joint_checked += 1 };
-                let mut sides = 1usize;
-                let mut proper = true;
-                for (x, y) in [(a1, a2), (a2, a1)] {
-                    p.assume(x);
-                    let bad = p.assume(m ^ 1);
-                    if bad {
-                        proper = false;
-                    } else if p.val[(y ^ 1) as usize] == 1 {
-                        sides += 1;
+            } else if !joint.is_empty() {
+                one.pairs_with_joint = 1;
+                one.joint = joint.len() as f64;
+                let k = if o.all { joint.len() } else { o.joint.min(joint.len()) };
+                if k > 0 && k < joint.len() {
+                    rng.sample_front(&mut joint, k);
+                }
+                let weight = if k > 0 { joint.len() as f64 / k as f64 } else { 0.0 };
+                for &m in &joint[..k] {
+                    if out_of_work(p) {
+                        break 'sources;
                     }
-                    p.undo(mark);
-                    if !proper {
-                        break;
+                    // the clause "not a1 or not a2 or m", seen from m's side
+                    one.joint_checked += 1;
+                    let mut sides = 1usize;
+                    let mut proper = true;
+                    for (x, y) in [(a1, a2), (a2, a1)] {
+                        p.assume(x);
+                        let bad = p.assume(m ^ 1);
+                        if bad {
+                            proper = false;
+                        } else if p.val[(y ^ 1) as usize] == 1 {
+                            sides += 1;
+                        }
+                        p.undo(mark);
+                        if !proper {
+                            break;
+                        }
+                    }
+                    if proper {
+                        one.t_inst[sides] += weight;
+                    } else {
+                        one.improper += weight;
                     }
                 }
-                let t = if far { &mut c.far } else { &mut c.near };
-                if proper {
-                    t.t_inst[sides] += weight;
-                } else {
-                    t.improper += weight;
-                }
+            }
+            let t = if far { &mut c.far } else { &mut c.near };
+            t.pairs += one.pairs;
+            t.pair_conflict_seen += one.pair_conflict_seen;
+            t.pair_hidden += one.pair_hidden;
+            t.pairs_with_joint += one.pairs_with_joint;
+            t.joint += one.joint;
+            t.joint_checked += one.joint_checked;
+            t.improper += one.improper;
+            for i in 0..4 {
+                t.t_inst[i] += one.t_inst[i];
             }
         }
     }
@@ -1652,5 +1662,44 @@ mod tests {
         let mut c = Counts::default();
         probe(&mut p, &active, &active, &o, &mut rng, u64::MAX, &mut c);
         assert!(c.near.t_inst[1] >= 1.0);
+    }
+
+    #[test]
+    fn the_work_limit_holds_inside_the_pairs_of_one_source() {
+        // the far-pair example with 300 copies of every variable chained to it: each
+        // propagation costs hundreds, a source has many pairs, and the limit must cut inside
+        let mut cls: Vec<Vec<i64>> = vec![vec![-1, 3], vec![-1, 4], vec![-2, 5], vec![-2, 6], vec![-3, -4, -5, -6, 7]];
+        let mut next = 8i64;
+        for v in 1..=7i64 {
+            for _ in 0..300 {
+                cls.push(vec![-v, next]);
+                cls.push(vec![v, -next]);
+                next += 1;
+            }
+        }
+        let refs: Vec<&[i64]> = cls.iter().map(|c| c.as_slice()).collect();
+        let f = formula((next - 1) as usize, &refs);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { probe_sources: 50, probe_pairs: 50, joint: 50, far_pairs: 50, ..Default::default() };
+        let mut rng = Rng::new(15);
+        let mut c = Counts::default();
+        probe(&mut p, &active, &active, &o, &mut rng, 50_000, &mut c);
+        // one propagation here costs about 600 to 2,500; the overrun is one pair's first steps at most
+        assert!(p.work < 60_000, "work {}", p.work);
+    }
+
+    #[test]
+    fn far_pairs_do_not_lean_on_the_numbering() {
+        // a far pair may have its second literal before the first in the numbering
+        let f = formula(7, &[&[-1, 3], &[-1, 4], &[-2, 5], &[-2, 6], &[-3, -4, -5, -6, 7]]);
+        let (mut p, _) = load(&f).unwrap();
+        let active = active_literals(&p);
+        let o = Opts { probe_sources: 100, probe_pairs: 0, joint: 100, far_pairs: 100, ..Default::default() };
+        let mut rng = Rng::new(1);
+        let mut c = Counts::default();
+        // only the literal "t" as a first literal: its partner "s" comes before it
+        probe(&mut p, &[lit_of(2)], &active, &o, &mut rng, u64::MAX, &mut c);
+        assert!(c.far.t_inst[1] >= 1.0, "far {:?}", c.far.t_inst);
     }
 }
