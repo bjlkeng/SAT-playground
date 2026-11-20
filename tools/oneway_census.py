@@ -394,6 +394,16 @@ def selftest(a):
         with contextlib.redirect_stdout(out):
             cmd_report(argparse.Namespace(tables=[str(table)], top=5, sort="equal"))
         assert " NA" in out.getvalue(), out.getvalue()
+        # a family with no row that measured a part has NA for that part, never 0, and comes last
+        got = measure(f, ["--sources", 0, "--probe-sources", 0, "--work", 5])
+        assert got["eq_hidden_all"] == "NA", got
+        write_table(table, [{"stem": "toy", **got}])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cmd_report(argparse.Namespace(tables=[str(table)], top=5, sort="equal"))
+        row = [l for l in out.getvalue().splitlines() if l.startswith("?")][0]
+        assert "0.0000" not in row and row.count("NA") >= 5, row
+        assert "middle NA" in out.getvalue(), out.getvalue()
         # Rust against Python on the Z3 catalog's small records
         import z3_catalog as zc
         recs = [r for r in zc.load(zc.CATALOG) if r["n_vars"] <= a.max_vars]
@@ -583,9 +593,12 @@ def cmd_report(a):
     for r in ok:
         by[fam.get(r["stem"], ("?", ""))[0]].append(r)
 
-    def mid(xs):
+    def mid(xs):                        # None when there is nothing to take the middle of
         xs = sorted(xs)
-        return xs[len(xs) // 2] if xs else 0.0
+        return xs[len(xs) // 2] if xs else None
+
+    def show(x, width, digits):         # a part that no row of the family measured is NA, never 0
+        return "NA".rjust(width) if x is None else f"{x:{width}.{digits}f}"
 
     def share(r):
         # of the two-literal clauses propagation sees, those it sees from one side only
@@ -616,12 +629,16 @@ def cmd_report(a):
         pr = [r for r in rs if looked(r, "pairs")]
         nr = [r for r in rs if met(r)]
         have = [r for r in e if num(r, "eq_hidden") > 0]
-        table.append((mid(eq(r) for r in e), len(have) / max(len(e), 1), name, len(rs), len(have), max((eq(r) for r in e), default=0),
-                      mid(share(r) for r in pr), mid(roots(r) for r in pr), mid(tside(r) for r in nr) if nr else None))
-    key = {"equal": lambda t: (-t[0], -t[1], -t[5]), "share": lambda t: -t[6], "roots": lambda t: -t[7]}[a.sort]
-    for m, _f, name, k, have, top, sh, rt, ts in sorted(table, key=key)[:a.top]:
-        ts = "     NA" if ts is None else f"{ts:7.4f}"      # no near pair met a three-literal clause in this family
-        print(f"{name[:40]:40s} {k:5d} | {have:4d}  {m:8.4f} {top:8.4f} | {sh:7.4f} | {rt:9.2f} | {ts}")
+        table.append({"name": name, "files": len(rs), "have": len(have) if e else None, "eq": mid(eq(r) for r in e),
+                      "top": max((eq(r) for r in e), default=None), "share": mid(share(r) for r in pr),
+                      "roots": mid(roots(r) for r in pr), "tside": mid(tside(r) for r in nr)})
+    by_key = {"equal": "eq", "share": "share", "roots": "roots"}[a.sort]
+    # a family with no measured row of the part it is sorted by comes last
+    table.sort(key=lambda t: (t[by_key] is None, -(t[by_key] or 0), -(t["top"] or 0), t["name"]))
+    for t in table[:a.top]:
+        have = "  NA" if t["have"] is None else f"{t['have']:4d}"
+        print(f"{t['name'][:40]:40s} {t['files']:5d} | {have}  {show(t['eq'], 8, 4)} {show(t['top'], 8, 4)} | "
+              f"{show(t['share'], 7, 4)} | {show(t['roots'], 9, 2)} | {show(t['tside'], 7, 4)}")
     e = [r for r in ok if looked(r, "equal")]
     pr = [r for r in ok if looked(r, "pairs")]
     whole = sorted(share(r) for r in pr)
@@ -630,7 +647,7 @@ def cmd_report(a):
     print(f"\n{len(ok)} files measured; the equal variables were looked at on {len(e)}, the pairs on {len(pr)} "
           f"(on the others the work limit ended that part before its first look).  A hidden equal variable on {len(have)} "
           f"(in {fams} of {len(by)} families), more than one such pair a 100 variables on {sum(eq(r) > 0.01 for r in e)}; "
-          f"one-way share in the middle {mid(whole):.4f}, above 0.1 on {sum(x > 0.1 for x in whole)}, "
+          f"one-way share in the middle {show(mid(whole), 6, 4).strip()}, above 0.1 on {sum(x > 0.1 for x in whole)}, "
           f"above 0.5 on {sum(x > 0.5 for x in whole)}; a failed literal in the sample on {sum(num(r, 'failed') > 0 for r in pr)}")
     far = [r for r in ok if looked(r, "far") and num(r, "f1") + num(r, "f2") + num(r, "f3") > 0]
     if far:
