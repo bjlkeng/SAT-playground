@@ -8798,7 +8798,11 @@ primitives" below). A second round made the reading general and measured
 it, in toys, on both suites and in three more runs ("A reader that is blind
 to the encoding", the section after this one): the pass's links can be
 found with no reading of numbers, the same pattern is on four cells in ten,
-and none of it makes the search faster.
+and none of it makes the search faster. A third look (2026-11-20, "Writing
+the encoding afresh" in that section) found why: the solver's own
+simplifier rewrites Z3's encoding in the first 30,000 conflicts of a run,
+and from then on what it holds has the pass's links with the pass or
+without it.
 
 ### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
 
@@ -9615,7 +9619,7 @@ built to do, and the thing it does is not what these cells lack. It stays
 in the solver as an option (`--structnum=1`, off) and as the census tool.
 The owner's decision is bead `d96.9.7`.
 
-## A reader that is blind to the encoding (2026-11-19/20; beads `SAT-playground-d96.9.8` to `d96.9.12`)
+## A reader that is blind to the encoding (2026-11-19 to 21; beads `SAT-playground-d96.9.8` to `d96.9.13`)
 
 The number pass above reads one thing Z3 writes. The owner asked (2026-11-19)
 for the reader to be general: for encodings that might happen, not Z3's
@@ -9648,6 +9652,17 @@ same patterns. This section is that analysis. No solver code changed.
 5. *A rewritten file is not the cell plus a harmless extra.* The solver's
    own readers see the added clauses. Three sorter miters lost their sorter
    pass in run 9 and went from 0.1G of work to 20G and more.
+6. *Why none of it paid: the solver gets there by itself* (added on
+   2026-11-20, after the owner asked whether writing the encoding afresh
+   would help; "Writing the encoding afresh" below). Snapshots of the
+   clauses the solver holds during a run show its own simplifier rewriting
+   Z3's encoding. On the 20 pyramid cells, with the pass off, a placement
+   sets its label bit in 19% of the sampled cases in the file and in 99.6%
+   after 30,000 conflicts; after 300,000 conflicts what the solver holds is
+   of the same size and make-up with the pass or without it (0.6% apart in
+   variables). Given the rewritten cells from the start (run 10), it refutes
+   the ten refuted ones in 1.011 of the work and finds a model on the other
+   ten in 42 of 80 runs against 46.
 
 ### One-way propagation, and how it is counted
 
@@ -10183,6 +10198,427 @@ sum of three cubes). No second family was found where counts are written
 with adders the way the pyramid's face counts are
 (`oneway/census/sums_2025.tsv`). The prior years were not read for sums.
 
+### Writing the encoding afresh: the solver does it by itself (2026-11-20/21; bead `SAT-playground-d96.9.13`)
+
+**The question** (the owner's, 2026-11-20). Everything above adds clauses to
+what Z3 wrote. What if the counting part were written afresh, the direct way,
+and Z3's clauses dropped, with the proof steps that needs? The formula would
+be smaller and its propagation whole. Would the search be faster?
+
+**The answer.** No, and the proof steps are not the reason. There would be
+nothing left to rewrite: the solver's own simplifier does this rewriting on
+every pyramid cell, in the first 30,000 conflicts of runs that take one to
+thirteen million. From then on what it holds has the pass's links, with the
+number pass or without it, and after 300,000 conflicts the two formulas are
+of one size and make-up (0.6% apart in variables). That also explains run 4:
+the pass hands the solver, at the start, what it has by itself a moment
+later. And handed the rewritten cells from the start, the solver refutes
+them no faster (run 10 below: 1.011 of the work) and finds a model no more
+often (42 of 80 runs against 46). No solver code changed for this; it is a
+measurement, with a new tool.
+
+**How it is measured** (`tools/live_set.py`). A proof lists every clause the
+solver adds and every clause it deletes. So what the solver holds at some
+moment is the cell's clauses, plus the added ones, less the deleted ones.
+The tool runs the solver to a conflict limit with a proof, rebuilds that set
+(the *held set*), and tests it by propagation, the way the reader tests a
+file. A variable that the solver merged into another has no clause left;
+the solver writes the equality into the proof just before, and the tool
+follows it to the variable that was kept. The check that the set is rebuilt
+right: the solver prints its own counts of clauses in its last report line.
+On the pyramid cells the rebuilt set has the same number of two-literal
+clauses and of longer clauses in every one of the 120 snapshots,
+and no proof line deletes a clause the rebuilt set does not hold.
+
+**A worked example: the catalog's toy** `int-eq-iff-0_3`. One number x in
+0..3 as three sorted bits b1, b2, b3 (x >= 1, x >= 2, x >= 3), and four
+tests T0 to T3 with T_c <-> (x = c)
+(`log/sorted-bits-2026-11-18/reencode/toy_direct.py`).
+
+| the toy | variables | clauses | of the 14 bit literals that should follow from a test alone, propagation sets |
+|---|---|---|---|
+| as Z3 writes it: a count over the bits, with 12 helpers | 19 | 50 | 6 |
+| written by hand: "T2 is b2 and not b3" | 7 | 12 | 14 |
+| Z3's clauses after the solver's own rule: eliminate the 12 helpers, then tidy | 7 | 23 | 14 |
+
+The 12 by hand: "b2 -> b1" and "b3 -> b2"; T0 <-> not b1 (two clauses);
+T1 <-> b1 and not b2 (three); T2 <-> b2 and not b3 (three); T3 <-> b3 (two).
+On all 128 values of the seven variables that both forms have, Z3's 50
+clauses can be completed to a model exactly when these 12 hold. The third
+row is the point. Eliminating a variable is the solver's standard step: the
+clauses that hold the helper are replaced by everything that follows from
+two of them without it. Tidying drops a clause that another covers, and cuts
+a literal that another clause makes needless. Done on the toy, with no
+knowledge of numbers, that leaves 23 clauses: the 12 written by hand, and 11
+more that follow from them ("not T0 or not T1", "b1 or not b3"). So on the
+toy the solver's own rule arrives at the hand-written encoding.
+
+**The same on a real cell, `bp4_BC012_CSO_AM_IXA`** (93,802 variables,
+891,227 clauses; refuted after 4.4 to 5.6 million conflicts and 20 to 25G of
+work in run 4). The test is the reader's: set a placement, propagate, see
+whether its label bit is set, on 3,000 of the 147,000 links.
+
+| moment | variables held | placements | label bits | other variables of the file | made by the solver | label bit not set, of the tested |
+|---|---|---|---|---|---|---|
+| the file as written | 64,899 | 28,812 | 474 | 35,613 | 0 | 2,377 of 3,000 |
+| after the first simplification, no conflict yet | 62,541 | 28,812 | 474 | 4,636 | 28,619 | 1,364 of 3,000 |
+| 3,000 conflicts | 49,827 | 19,426 | 444 | 3,729 | 26,228 | 183 of 2,039 |
+| 10,000 conflicts | 48,951 | 19,087 | 440 | 3,382 | 26,042 | 18 of 2,007 |
+| 30,000 conflicts | 34,568 | 19,032 | 437 | 1,140 | 13,959 | 0 of 2,000 |
+| 100,000 conflicts | 26,853 | 19,001 | 434 | 590 | 6,828 | 0 of 1,984 |
+| 300,000 conflicts | 22,507 | 18,085 | 426 | 400 | 3,596 | 0 of 1,884 |
+| with the number pass on: after the first simplification, no conflict yet | 40,120 | 19,076 | 441 | 2,718 | 17,885 | 0 of 2,006 |
+| with the number pass on: 30,000 conflicts | 33,990 | 19,038 | 437 | 713 | 13,802 | 0 of 2,001 |
+| with the number pass on: 300,000 conflicts | 22,199 | 17,923 | 426 | 302 | 3,548 | 0 of 1,890 |
+
+How to read it.
+- *The last column.* In the file a placement sets its label bit in 623 of
+  3,000 cases. The first simplification, before any conflict, brings that to
+  1,636: it merges gates that compute the same thing, of which Z3's output
+  has many (with that step off the count stays at 623). After 3,000
+  conflicts 183 of the 2,039 still tested are not set, after 10,000
+  conflicts 18, after 30,000 none. "Tested" falls because the solver rules
+  placements out for good (961 of the 3,000 in the first 3,000 conflicts),
+  and a placement that is off needs no link.
+- *The middle columns.* Z3's helpers are the "other variables of the file".
+  35,613 of them have a clause in the file once the fixed variables are
+  taken out; 4,636 are left after the first simplification, 1,140 after
+  30,000 conflicts and 400 after 300,000. What the search works on from then
+  is the puzzle's own variables, 18,085 placements and the label bits, and
+  3,596 variables that the solver made itself, to write groups of
+  two-literal clauses with fewer clauses. A placement here is often held
+  under the number of a variable equal to it; the table counts such a
+  variable as the placement.
+- *The last three rows.* With the pass on the links are there from the
+  start, as they should be. After 300,000 conflicts the solver holds
+  22,199 variables with the pass and 22,507 without it.
+- *What it costs.* 30,000 conflicts are reached after 0.82G of work, of
+  which 0.42G is spent before the first conflict whatever the encoding (the
+  structure stage and the first simplification). The run takes 20 to 25G.
+
+**All 20 cells.** The same test, as "not set, of the tested":
+
+| cell | file | 0 | 3K | 10K | 30K | 100K | 300K |
+|---|---|---|---|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | 2,377 of 3,000 | 1,347 of 3,000 | 228 of 2,022 | 45 of 1,875 | 6 of 1,711 | 6 of 1,571 | 6 of 861 |
+| `bp4_BC012_AM_FPBEQ_ZR` | 2,408 of 3,000 | 1,402 of 3,000 | 141 of 2,545 | 27 of 2,254 | 0 of 2,103 | 0 of 1,899 | 0 of 1,288 |
+| `bp4_BC012_AM_IXA_LPI` | 1,638 of 1,976 | 884 of 1,864 | 128 of 1,745 | 39 of 1,723 | 3 of 1,707 | 0 of 1,668 | 0 of 1,522 |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 2,408 of 3,000 | 1,402 of 3,000 | 218 of 2,495 | 37 of 2,369 | 0 of 2,056 | 0 of 1,874 | 0 of 1,320 |
+| `bp4_BC012_CSO_AM_IXA` | 2,377 of 3,000 | 1,364 of 3,000 | 183 of 2,039 | 18 of 2,007 | 0 of 2,000 | 0 of 1,984 | 0 of 1,884 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 2,409 of 3,000 | 1,403 of 3,000 | 225 of 2,542 | 57 of 2,345 | 0 of 2,108 | 0 of 1,849 | 0 of 1,238 |
+| `bp4_BC012_CSO_IXA_LP` | 2,398 of 3,000 | 1,312 of 2,964 | 114 of 2,005 | 4 of 1,963 | 0 of 1,954 | 0 of 1,912 | 0 of 1,827 |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 2,398 of 3,000 | 1,312 of 2,964 | 90 of 1,835 | 0 of 1,807 | 0 of 1,682 | 0 of 1,619 | 0 of 990 |
+| `bp4_BC012_IXA_LPI_FPBLE` | 1,638 of 1,976 | 882 of 1,864 | 104 of 1,692 | 44 of 1,691 | 0 of 1,642 | 7 of 1,251 | 7 of 687 |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 2,468 of 2,996 | 1,354 of 2,913 | 148 of 2,835 | 20 of 2,798 | 0 of 2,788 | 0 of 2,747 | 15 of 1,916 |
+| `bp4_CB_LP_FPBLE` | 2,473 of 2,996 | 1,433 of 2,913 | 86 of 2,814 | 26 of 2,798 | 4 of 2,791 | 0 of 2,701 | 0 of 1,858 |
+| `bp4_CSO_AM_IXA_LP` | 2,392 of 3,000 | 1,307 of 2,964 | 87 of 1,988 | 6 of 1,963 | 0 of 1,958 | 0 of 1,902 | 0 of 1,815 |
+| `bp4_CSO_IXA_ZR` | 2,432 of 3,000 | 1,442 of 3,000 | 115 of 1,710 | 22 of 1,666 | 0 of 1,588 | 0 of 1,565 | 0 of 1,553 |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | 0 of 0 | 0 of 0 | 0 of 0 | 0 of 0 | 0 of 0 | 0 of 0 | 0 of 0 |
+| `bp4_IXA_FPBEQ_ZR` | 2,433 of 3,000 | 1,443 of 3,000 | 66 of 1,665 | 0 of 1,626 | 0 of 1,543 | 0 of 1,383 | 0 of 1,018 |
+| `bp4_LPI_FPBEQ_ZR` | 2,483 of 3,000 | 1,361 of 2,849 | 196 of 2,583 | 68 of 2,580 | 10 of 2,511 | 24 of 2,453 | 9 of 1,326 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 2,431 of 3,000 | 1,404 of 2,937 | 75 of 1,604 | 0 of 1,561 | 0 of 1,524 | 0 of 1,506 | 0 of 1,475 |
+| `bp4_TCO_CSO_ZR` | 2,475 of 3,000 | 1,473 of 3,000 | 351 of 2,969 | 94 of 2,929 | 11 of 2,869 | 0 of 2,792 | 0 of 2,552 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 2,432 of 3,000 | 1,442 of 3,000 | 190 of 1,725 | 10 of 1,635 | 7 of 1,516 | 7 of 1,342 | 6 of 995 |
+| `bp5_CSO` | 2,641 of 3,000 | 1,925 of 3,000 | 1,363 of 3,000 | 563 of 3,000 | 99 of 3,000 | 4 of 3,000 | 1 of 2,998 |
+| **all 20** | **44,711 of 54,944** | **25,892 of 54,232** | **4,108 of 41,813** | **1,080 of 40,590** | **140 of 39,051** | **48 of 37,018** | **44 of 29,123** |
+| share not set | 81.38% | 47.74% | 9.82% | 2.66% | 0.36% | 0.13% | 0.15% |
+
+In the files a placement sets its label bit in 19% of the cases. Before the
+first conflict that is 52%, after 3,000 conflicts 90%, after 10,000
+conflicts 97.3%, and after 30,000 conflicts 99.6%. Those 30,000 conflicts
+are 0.2% to 3.1% of the conflicts of a refuted cell's run in run 4 (0.95 to
+13.0 million). `bp4_CSO_LP_FPBLE_ZR_YS` has no label left to test (its
+options fix them), and the cell of size 5 is slower: 99 of 3,000 not set
+after 30,000 conflicts, 4 after 100,000 (its run finds a model after
+197,286 conflicts, and its last column is that moment). A second seed gives
+the same picture (seed 3 after 30,000 conflicts: 110 of 38,738 not set, against 140 of 39,051 at seed 2).
+
+What the solver holds, in variables:
+
+| cell | variables in the file | held: file as written | first simplification | 30,000 | 300,000 | of those: placements | label bits | other variables of the file | made by the solver |
+|---|---|---|---|---|---|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | 97,619 | 68,716 | 67,347 | 31,487 | 20,046 | 15,443 | 185 | 1,679 | 2,739 |
+| `bp4_BC012_AM_FPBEQ_ZR` | 81,661 | 52,719 | 50,096 | 28,228 | 18,026 | 14,070 | 154 | 1,380 | 2,422 |
+| `bp4_BC012_AM_IXA_LPI` | 92,439 | 44,592 | 39,203 | 28,884 | 17,808 | 14,299 | 388 | 289 | 2,832 |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 83,454 | 54,494 | 52,034 | 29,036 | 18,435 | 14,070 | 164 | 1,799 | 2,402 |
+| `bp4_BC012_CSO_AM_IXA` | 93,802 | 64,899 | 62,541 | 34,568 | 22,507 | 18,085 | 426 | 400 | 3,596 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 82,427 | 53,468 | 52,026 | 29,311 | 18,547 | 14,211 | 152 | 1,784 | 2,400 |
+| `bp4_BC012_CSO_IXA_LP` | 102,332 | 73,290 | 68,621 | 35,751 | 22,055 | 17,500 | 396 | 694 | 3,465 |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 106,053 | 77,011 | 73,783 | 32,631 | 19,418 | 14,816 | 258 | 1,738 | 2,606 |
+| `bp4_BC012_IXA_LPI_FPBLE` | 94,479 | 46,645 | 42,816 | 28,751 | 17,168 | 13,134 | 160 | 1,532 | 2,342 |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 77,353 | 48,079 | 45,236 | 30,310 | 19,022 | 13,923 | 136 | 2,242 | 2,721 |
+| `bp4_CB_LP_FPBLE` | 74,653 | 45,453 | 42,888 | 29,114 | 18,517 | 14,224 | 133 | 1,350 | 2,810 |
+| `bp4_CSO_AM_IXA_LP` | 103,337 | 74,294 | 68,845 | 35,765 | 21,726 | 17,306 | 396 | 527 | 3,497 |
+| `bp4_CSO_IXA_ZR` | 77,643 | 48,741 | 46,465 | 19,490 | 13,361 | 10,793 | 232 | 243 | 2,093 |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | 48,032 | 18,463 | 12,582 | 4,803 | 2,385 | 968 | 0 | 1,053 | 364 |
+| `bp4_IXA_FPBEQ_ZR` | 79,962 | 51,015 | 49,370 | 20,130 | 13,903 | 10,856 | 138 | 1,071 | 1,838 |
+| `bp4_LPI_FPBEQ_ZR` | 78,412 | 49,403 | 44,810 | 31,690 | 20,152 | 15,841 | 146 | 1,419 | 2,746 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 85,954 | 56,731 | 49,785 | 18,457 | 12,604 | 10,167 | 224 | 258 | 1,955 |
+| `bp4_TCO_CSO_ZR` | 77,553 | 48,656 | 46,329 | 36,637 | 22,287 | 18,056 | 296 | 352 | 3,583 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 79,787 | 50,884 | 49,522 | 19,927 | 13,604 | 10,618 | 132 | 1,007 | 1,847 |
+| `bp5_CSO` (a model was found before that) | 380,100 | 259,650 | 134,484 | 216,914 | 154,944 | 120,285 | 1,030 | 2,873 | 30,756 |
+| **the 19 cells of size 4** | **1,616,952** | **1,027,553** | **964,299** | **524,970** | **331,571** | **258,380** | **4,116** | **20,817** | **48,258** |
+
+After 300,000 conflicts the 19 cells of size 4 hold 331,571 variables in sum: 77.9% of them placements, 1.2% label bits, 6.3% other variables of the file and 14.6% made by the solver. The "other" are 243 to 2,242 a cell; they are highest on the cells with face counts (1,007 to 2,242, against 243 to 694 on the others).
+
+**With the pass on and off**, summed over the 19 cells of size 4:
+
+| moment | variables held, pass off | pass on | two-literal clauses, off | on | longer clauses, off | on | label bit not set of tested, off | on |
+|---|---|---|---|---|---|---|---|---|
+| after the first simplification, no conflict yet | 964,299 | 790,198 | 2,432,557 | 2,006,685 | 1,425,716 | 1,100,596 | 23,967 of 51,232 | 0 of 44,606 |
+| 30,000 conflicts | 524,970 | 515,939 | 1,602,095 | 1,572,350 | 756,721 | 826,007 | 41 of 36,051 | 0 of 36,218 |
+| 300,000 conflicts | 331,571 | 333,632 | 1,944,203 | 1,945,097 | 881,544 | 879,362 | 43 of 26,125 | 2 of 25,688 |
+
+At the start the pass makes the formula smaller by 18% in variables. After
+30,000 conflicts the two differ by 2%, after 300,000 by 0.6% (a cell holds 0.977 to 1.079 as many variables with the pass as without).
+So the pass moves forward by a few tens of thousands of conflicts what the
+solver gets anyway; run 4 measured the result, 0.963 of the work on the
+refuted cells, inside what four seeds can tell apart from 1.
+
+**Which of the solver's steps does it?** No single one. The same cell with
+one step switched off at a time, at 30,000 conflicts:
+
+| what is switched off | variables held at 30,000 conflicts | label bit not set, of the tested: before the first conflict | at 30,000 conflicts |
+|---|---|---|---|
+| everything on (the default) | 34,568 | 1,364 of 3,000 | 0 of 2,000 |
+| no variable elimination | 48,837 | 1,364 of 3,000 | 11 of 2,007 |
+| no clause shortening (vivification) | 34,909 | 1,364 of 3,000 | 2 of 2,003 |
+| no sweeping for equal variables | 34,630 | 1,364 of 3,000 | 14 of 2,003 |
+| no merging of equal gates | 34,694 | 2,377 of 3,000 | 0 of 2,002 |
+| no merging of equal variables by two-literal clauses | 35,262 | 1,364 of 3,000 | 5 of 1,999 |
+| no compression with new variables | 21,519 | 1,364 of 3,000 | 0 of 2,001 |
+| no probing at all (the five above and more) | 21,764 | 2,377 of 3,000 | 27 of 2,001 |
+| no simplification at all: search and learning only | 45,723 | 2,377 of 3,000 | 220 of 2,037 |
+
+Each step can be taken away and the gap still closes. The merging of equal
+gates is what halves it before the first conflict. With all simplification
+off (the last row) the search alone closes most of it by what it learns:
+every missing link is checkable by propagation as it stands, so a conflict
+that needs one can produce it.
+
+**The orders between labels.** Run 7 added the reader's `pair` clauses (one
+label at most another, as two-literal clauses) to 14 cells and found no
+gain. The snapshots, with only those clauses appended and tested ("seen
+from both sides": with one literal off, propagation sets the other, both
+ways):
+
+| moment | seen from both sides, of the still testable | settled by a fixed literal | a variable eliminated |
+|---|---|---|---|
+| the file as written | 0 of 2,294 | 0 | 0 |
+| after the first simplification, no conflict yet | 4 of 2,280 | 14 | 0 |
+| 30,000 conflicts | 741 of 1,201 | 712 | 381 |
+| 300,000 conflicts | 330 of 368 | 855 | 1,071 |
+
+Most of these clauses stop mattering: a literal of theirs is fixed, or a
+variable is eliminated. Of those that can still be tested, six in ten are
+seen from both sides after 30,000 conflicts and nine in ten after 300,000.
+So the orders come by themselves too, more slowly than the links.
+
+**Other families: the 24 cells of run 9.** There the blind step
+(`one-way equal`) appended the two halves of each hidden equal variable.
+The same test on the held set, on 3,000 of the appended clauses where there
+are more:
+
+| cell | appended clauses (tested) | the file | first simplification | 30,000 conflicts | 300,000 conflicts | at 300,000: settled by a fixed literal | a variable eliminated |
+|---|---|---|---|---|---|---|---|
+| `BubbleVsPancakeSort_8_4` | 189 (189) | 30 of 189 | refuted after 0 conflicts | refuted | refuted |  |  |
+| `BubbleVsPancakeSort_9_4` | 292 (292) | 44 of 292 | refuted after 0 conflicts | refuted | refuted |  |  |
+| `PancakeVsSelectionSort_6_6` | 173 (173) | 18 of 173 | refuted after 0 conflicts | refuted | refuted |  |  |
+| `SAT_dat.k100-24_1_rule_2` | 34,322 (3,000) | 1,472 of 3,000 | 1,465 of 2,080 | 579 of 642 | 391 of 392 | 1,873 | 735 |
+| `UR-15-10p0` | 26,510 (3,000) | 1,626 of 3,000 | 1,606 of 2,979 | 654 of 1,562 | 365 of 421 | 1,033 | 1,546 |
+| `aaai10-planning-ipc5-pathways-17-step20` | 1,334 (1,334) | 122 of 1,334 | 1,084 of 1,288 | 601 of 604 | 503 of 503 | 168 | 663 |
+| `at-least-two-ibm-2004-23-k100` | 3,353 (3,000) | 735 of 3,000 | 1,136 of 2,423 | 891 of 1,056 | 493 of 493 | 997 | 1,510 |
+| `bob12s09-opt` | 1,364 (1,364) | 501 of 1,364 | 920 of 1,348 | 362 of 364 | 122 of 123 | 1,035 | 206 |
+| `dislog_a14_x14_n24` | 372 (372) | 37 of 372 | 133 of 240 | 132 of 137 | 132 of 137 | 138 | 97 |
+| `fermat-834855329100173267` | 79 (79) | 3 of 79 | 60 of 60 | 60 of 60 | 60 of 60 | 19 | 0 |
+| `g2-hwmcc15deep-oski15a10b10s-k20` | 4,607 (3,000) | 628 of 3,000 | 640 of 3,000 | 426 of 1,291 | 209 of 212 | 810 | 1,978 |
+| `gm16spctrc` | 1,608 (1,608) | 10 of 1,608 | 14 of 1,608 | 3 of 132 | 2 of 4 | 388 | 1,216 |
+| `jkkk-one-one-10-34-sat` | 143 (143) | 42 of 143 | 98 of 101 | 85 of 85 | 63 of 63 | 70 | 10 |
+| `oski15a01b01s_opt` | 1,209 (1,209) | 8 of 1,209 | 77 of 1,209 | 57 of 57 | 56 of 56 | 0 | 1,153 |
+| `oski15a01b09s_opt` | 1,207 (1,207) | 12 of 1,207 | 81 of 1,207 | 37 of 37 | 28 of 28 | 8 | 1,171 |
+| `oski15a01b45s_opt` | 1,210 (1,210) | 10 of 1,210 | 79 of 1,210 | 45 of 45 | 40 of 40 | 4 | 1,166 |
+| `reconf10_22_queen20_3_8667` | 2,057 (2,057) | 1,520 of 2,057 | 1,392 of 1,929 | 0 of 0 | 0 of 0 | 1,516 | 541 |
+| `snw_16_8_preOpt_pre` | 215,118 (3,000) | 0 of 3,000 | 1 of 3,000 | 17 of 3,000 | refuted after 159,798 conflicts |  |  |
+| `sted2_0x0_n219-342` | 416 (416) | 107 of 416 | 113 of 302 | 134 of 168 | 95 of 107 | 127 | 182 |
+| `sudoku-N30-15` | 57,625 (3,000) | 53 of 3,000 | 65 of 3,000 | 151 of 151 | 113 of 113 | 10 | 2,877 |
+| `sudoku-N30-23` | 57,529 (3,000) | 53 of 3,000 | 70 of 3,000 | 157 of 157 | 142 of 142 | 9 | 2,849 |
+| `sudoku-N30-28` | 57,512 (3,000) | 53 of 3,000 | 70 of 3,000 | 129 of 129 | 113 of 113 | 3 | 2,884 |
+| `sum_of_3_cubes_37_bits_87` | 2,690 (2,690) | 2,004 of 2,690 | 18 of 20 | 12 of 12 | 12 of 12 | 2,678 | 0 |
+| `test_v7_r12_vr10_c1_s18160.smt2-stp212` | 22,854 (3,000) | 463 of 3,000 | 504 of 2,967 | 165 of 288 | 29 of 29 | 404 | 2,567 |
+| **all** (the cells not refuted by then) | | **9,551 of 41,343** | **9,626 of 35,971** | **4,697 of 9,977** | **2,968 of 3,048** | 11,290 | 23,351 |
+
+Read as shares of the clauses tested. In the files 23% of them are seen from both sides already
+(the blind step appends both clauses of an equality when one is hidden).
+After 300,000 conflicts, on the 20 cells not refuted by then, 62% are
+about a variable the solver has eliminated, 30% are settled by a variable it
+has fixed, 7.9% are seen from both sides, and 0.2% (80 of 37,689) are
+not. After 30,000 conflicts 13% are still not seen (5,280 of 40,689), more
+than half of them on one cell: on `snw_16_8_preOpt_pre` 2,983 of 3,000 are not
+seen then, and the solver refutes that cell after 159,798 conflicts all the
+same. The 3 sorter miters are refuted by the sorter pass before the search
+starts. So on these families the solver more often removes the variable than
+repairs its clauses: a hidden equal variable is a helper, and helpers are
+what variable elimination takes out.
+
+**The re-encoded cells in a search: run 10.** The direct test of the
+question. For each of the 20 pyramid cells, the clauses the solver holds
+after 30,000 conflicts of its own run (pass off, seed 2) were written out as
+a file: the cell as rewritten, with the links in place and most of Z3's
+helpers gone. Over the 20 cells the files have 37% of the variables and 19%
+of the clauses (741,884 of 1,997,052 and 3.4 of 18.3 million). Each file
+was given to the same frozen build (`13-j42`) from scratch, under a work
+limit of 60G, against the cell as it stands (run 4's pass-off arm: the same
+build, seeds and limit).
+
+*The ten refuted cells*, seeds 2 to 5:
+
+| cell | work to refute the cell as it stands, four seeds | the rewritten cell | ratio |
+|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | 108.4G | 151.9G | 1.402 |
+| `bp4_BC012_AM_IXA_LPI` | 52.0G | 43.9G | 0.844 |
+| `bp4_BC012_CSO_AM_IXA` | 90.4G | 98.1G | 1.085 |
+| `bp4_BC012_CSO_IXA_LP` | 30.5G | 25.0G | 0.818 |
+| `bp4_BC012_CSO_IXA_LP_FPBLE` | 27.0G | 24.6G | 0.908 |
+| `bp4_BC012_IXA_LPI_FPBLE` | 192.8G | 163.4G | 0.848 |
+| `bp4_CB_CSO_LP_FPBEQ_FPBLE` | 50.7G | 62.9G | 1.240 |
+| `bp4_CB_LP_FPBLE` | 24.3G | 21.5G | 0.885 |
+| `bp4_CSO_AM_IXA_LP` | 26.9G | 22.4G | 0.831 |
+| `bp4_CSO_LP_FPBLE_ZR_YS` | 27.5G | 24.0G | 0.876 |
+| **all ten** | **630.5G** | **637.6G** | **1.011** |
+
+All 40 runs of each arm end in a refutation; the typical run takes 0.965 of
+the work. The rewritten arm starts ahead: its file is what the original run
+holds after 30,000 conflicts, which costs that run 0.51 to 0.82G, where the
+rewritten file spends 0.14 to 0.19G before its own first conflict. That
+head start, 0.52G a run on average, is 3% of the sum, so neither 1.011 nor
+0.965 is a gain. A cell moves by 0.82 to 1.40, as the cells did between the
+arms of run 4 (0.82 to 1.24): that is what four seeds of this family
+scatter.
+
+*The ten cells with a model*, seeds 2 to 9. Runs that find a model, of 8:
+
+| cell | the cell as it stands | the rewritten cell | for comparison, the cell with the number pass (run 4) |
+|---|---|---|---|
+| `bp4_BC012_AM_FPBEQ_ZR` | 1 | 0 | 3 |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 3 | 4 | 5 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 6 | 6 | 6 |
+| `bp4_CSO_IXA_ZR` | 7 | 5 | 5 |
+| `bp4_IXA_FPBEQ_ZR` | 8 | 8 | 7 |
+| `bp4_LPI_FPBEQ_ZR` | 2 | 2 | 1 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 3 | 4 | 3 |
+| `bp4_TCO_CSO_ZR` | 2 | 3 | 3 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 6 | 3 | 3 |
+| `bp5_CSO` | 8 | 7 | 8 |
+| **all ten, of 80** | **46** | **42** | **44** |
+
+Counted as work, with a run that finds no model at twice the limit: 5,321.9G
+as the cells stand against 5,703.1G rewritten, 1.072. Which seed finds a
+model moves far more than the encoding does: 13 runs find one only on the
+rewritten file and 17 only on the cell as it stands. On the 29 runs where
+both find one, the rewritten file takes 1.108 of the work (the typical run
+1.079). So no gain here either, and no loss that these seeds can tell from
+luck.
+
+A model of a rewritten file is not yet a model of the cell: the variables
+the solver dropped have no value in it. All 42 models were completed and
+checked (`run10_model_extend.py`). The values the model gives to the cell's
+own variables that the rewritten file still has (11,268 to 21,925 of them
+on a cell of size 4, 131,224 on the cell of size 5) are appended to the cell
+as one-literal clauses, the solver is run on that, and its model is checked
+against every clause of the cell. Every one is completed without a single
+conflict, in 0.25 to 0.66G of work, most of it the reading of the cell.
+
+*What the solver's own readers see in the rewritten files.* The structure
+stage reads all 20 as it reads the cells (`timing/stage_diff.py`: no pass
+refutes and no symmetry is fixed, in either arm). The count engine's reader
+finds far more in them: 61,644 counts over the 120 runs, against 408 in the
+cells as they stand. Over all 120 runs those counts force 12 literals and
+show no conflict. So the direct form does show the solver its counts, and
+there is nothing in them for the search.
+
+*In seconds.* The refuted cells take 15,860 s as they stand and 15,515 s
+rewritten (0.978). A unit of work takes 0.967 of the time on the rewritten
+refuted cells and 1.053 on the rewritten cells with a model. The two arms
+ran on different days, with other neighbours on the host, so this is no
+timing; it says only that the smaller file is not faster by the unit of
+work to a degree that would change the picture.
+
+**The proof steps would not be the obstacle.** Each direct clause is
+checkable by propagation as it stands or in a few such steps; the pass
+proves 113,999 of them on the 20 cells that way today. Dropping Z3's
+clauses needs no proof step: a proof may delete any clause. For a model the
+solver must give values to the helpers it dropped, and it has the means,
+because it does exactly that for every variable it eliminates. The solver's
+simplifier takes these same steps, with their proof, all through a run.
+
+**What it means.**
+- *A re-encoding pass is not built.* On the pyramid cells there is nothing
+  for it to do after the first percent or two of a run. The pass that does
+  part of it at the start was measured as neutral (run 4), and so was the
+  whole of it (run 10).
+- *This is why the added clauses of this epic changed nothing.* The links
+  (run 4), the orders (run 7) and the blind step's equalities (run 9) are
+  clauses the solver comes to hold or makes needless by itself, early.
+  What it cannot get that way is what needs a case split or counting: the
+  clause "each position holds a cube" is not checkable by propagation, and
+  the face counts written with adders stay as they are (run 8 made them
+  propagate and found no gain either).
+- *A snapshot comes before a timing run.* It takes minutes where runs 4 to
+  9 took hours, and it would have said beforehand that the pass's clauses
+  are there after 30,000 conflicts. Before adding implied clauses or
+  rewriting an encoding, look at whether the solver already holds them
+  (`live_set.py snap` with `--added`).
+
+**Caveats.**
+- One build (`13-j42`), seed 2 (and seed 3 at two moments); 3,000 sampled
+  links or clauses a cell. The rewritten files of run 10 come from the
+  seed-2 run of each cell; another seed's run would leave another file.
+- The held set includes the clauses learned so far; a proof does not tell
+  them from the simplified formula. The table of steps switched off says
+  that both do the work, and that the search alone does most of it.
+- The rewritten cells of run 10 are the solver's own rewriting, with what
+  it had learned in 30,000 conflicts, not an encoding written by hand from
+  the puzzle. They have what was asked of one: on the ten refuted cells
+  8% of Z3's helpers are left (27,659 of 342,668), and a placement sets its
+  label bit in all but 13 of 18,233 sampled cases. What a hand-written
+  encoding would change beyond that, the face counts written as counts for
+  one, is not in run 10 (run 8 made them propagate by added clauses and
+  found no gain).
+- A proof may add a clause more often than the solver keeps it. This
+  solver's merging of equal gates does: the same equality is written once
+  for every pair of gates that gives it, and one copy is kept. The rebuilt
+  set can then hold copies of an equality after the solver has merged the
+  two variables. That is seen on 12 of the 62 snapshots of the other families (`dislog_a14_x14_n24`, `fermat-834855329100173267`, `oski15a01b01s_opt`, `oski15a01b09s_opt`, `oski15a01b45s_opt`: 12 to 25,380 two-literal clauses and 3 to 6,345 variables too many) and, with the pass on, on 1 pyramid cell (12 clauses). Those clauses are true and propagate as the
+  merged variable does, so the tests stand; the counts of variables held
+  are too high by that much on those cells.
+- "Eliminated" says that a variable has no clause left and no equality in
+  the proof leads from it to a held variable. The test cannot be made for
+  it, and it is counted apart.
+- The other families are the 24 cells of run 9, one snapshot series each,
+  not a census.
+
+Tools and files: `tools/live_set.py` (`read`, `snap`, `report`,
+`selftest`); tables `benchmarks/rl/live_set_pyramid_2025.tsv` (20 cells,
+seven moments), `live_set_pyramid_pass_2025.tsv` (the pass on),
+`live_set_pyramid_seed3_2025.tsv`, `live_set_pyramid_pairs_2025.tsv`,
+`live_set_other_2025.tsv`, `live_set_steps_off_2025.tsv`; job tables, the
+toy and the scripts that made the tables above in
+`log/sorted-bits-2026-11-18/reencode/` (`all.sh`, `readme_tables.py`), and
+run 10 in its folder `run10/` (`run10_make.sh`, `run10.sh` and
+`run10.summary.txt` for the refuted cells; `run10_model_make.sh`,
+`run10_model.sh`, `run10_model.summary.txt`, `run10_model_extend.py` and
+`run10_model_extend.txt` for the cells with a model; the files and the
+outputs).
+Codex reviewed the tool in seven rounds; the seventh was clean. The first
+six found: clauses of the parity and count engines counted twice (the
+derived file holds them too, behind the structure stage's), a refuted
+snapshot written out as a satisfiable file, tables of different runs mixed
+in one report, a satisfied clause counted as eliminated, failed rows passed
+over when a table is taken up again (twice), the solver's own variables told
+by the header's count, an equality lost when two variables went through one
+the file already had, and snapshots of runs in which the control split
+writes its case solvers' clauses into the proof (refused now).
+
 ### What it means
 
 - *The reader is general now, as tools.* What the number pass finds by
@@ -10202,6 +10638,17 @@ with adders the way the pyramid's face counts are
   was in run 7, 0.98 to 0.99 in run 8 and 1.03 in run 9, and the cells with
   a model move with the seeds. The reading of run 4 stands: the search
   learns what a propagation would have told it when it needs it.
+- *Why: the solver rewrites the encoding by itself* ("Writing the encoding
+  afresh" above). Within 30,000 conflicts of runs that take millions, the
+  solver holds the pass's links without the pass; after 300,000 it holds a
+  formula of the same size and make-up either way; the blind step's clauses
+  on other families are mostly about variables it eliminates. Run 10 gave it
+  the rewritten pyramid cells from the start: 1.011 of the work on the ten
+  refuted cells, a model in 42 of 80 runs against 46 on the other ten. So on
+  these cells neither added clauses nor a re-encoding has anything to give,
+  and a snapshot of what the solver holds (`tools/live_set.py`, minutes) is
+  the first test for the next idea of this kind, before a timing run
+  (hours).
 - *The blind step is dear.* Minutes where the number pass takes seconds
   (above). A pass of the solver built on it would need a rule for where to
   look.

@@ -198,7 +198,23 @@ work is **solver 13** and the RL scheduler on top of it.
   reader of the solver that goes by shape** (three sorter miters lost their
   sorter pass in run 9): before trusting a file-rewrite test, compare the
   structure stage's lines of both arms
-  (`log/sorted-bits-2026-11-18/timing/stage_diff.py`). Whether anything of it
+  (`log/sorted-bits-2026-11-18/timing/stage_diff.py`). **Why none of it
+  paid** (2026-11-20/21, bead `d96.9.13`; solver README, "Writing the
+  encoding afresh"): the solver's own simplifier rewrites Z3's encoding by itself.
+  `tools/live_set.py` rebuilds the clauses the solver holds at a moment of a
+  run from a proof (the cell, plus what the proof adds, less what it
+  deletes) and tests them. On the 20 pyramid cells with the pass off, a
+  placement sets its label bit in 19% of the sampled cases in the file, in
+  52% after the first simplification and in 99.6% after 30,000 conflicts
+  (0.2% to 3.1% of a refuted cell's run); after 300,000 conflicts what the
+  solver holds is of the same size and make-up with the pass or without
+  (0.6% apart in variables), three quarters of it placements. Handed the rewritten cells from the start (run 10), it refutes
+  the ten refuted ones in 1.011 of the work (four seeds) and finds a model
+  on the other ten in 42 of 80 runs against 46. So a pass that writes the
+  encoding afresh has nothing to do there. **Before a timing run for
+  added clauses or a re-encoding, take a snapshot** (`live_set.py snap`,
+  minutes): it shows whether the solver comes to hold the clauses by
+  itself. Whether anything of it
   goes on by default is the owner's call (bead `d96.9.7`). Solver README,
   "Numbers stored as sorted bits". The pass's rules are in `CONVENTIONS.md`
   ("The number pass"): after a change to what a reader takes, every target
