@@ -157,7 +157,7 @@ work is **solver 13** and the RL scheduler on top of it.
   "The divider pass's pairs asked of one solver";
   `tools/div_chain_check.py` runs a cell through both chains). The 2026
   holdout was not looked at for it.
-- **Numbers stored as sorted bits (epic `SAT-playground-d96.9`, 2026-11-18/19)** —
+- **Numbers stored as sorted bits (epic `SAT-playground-d96.9`, 2026-11-18, closed 2026-11-21)** —
   Z3 writes an integer as sorted bits and a test on it as a count, and
   propagation then runs from the bits to the test and not back; the 20 Bel's
   Pyramid cells are written that way. Built: a catalog of Z3's encodings
@@ -214,8 +214,11 @@ work is **solver 13** and the RL scheduler on top of it.
   encoding afresh has nothing to do there. **Before a timing run for
   added clauses or a re-encoding, take a snapshot** (`live_set.py snap`,
   minutes): it shows whether the solver comes to hold the clauses by
-  itself. Whether anything of it
-  goes on by default is the owner's call (bead `d96.9.7`). Solver README,
+  itself. **The owner decided on
+  2026-11-21: the number pass stays off, and everything stays as tools**
+  (bead `d96.9.7`; the epic is closed). Not asked and not measured: whether
+  stronger reasoning over the face counts (cutting planes) would shorten a
+  refutation (noted in bead `dqk`). Solver README,
   "Numbers stored as sorted bits". The pass's rules are in `CONVENTIONS.md`
   ("The number pass"): after a change to what a reader takes, every target
   cell and the 400-cell census come before any timing run; and a new pass

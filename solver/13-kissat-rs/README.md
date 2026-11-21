@@ -8804,6 +8804,16 @@ simplifier rewrites Z3's encoding in the first 30,000 conflicts of a run,
 and from then on what it holds has the pass's links with the pass or
 without it.
 
+**The owner's decision (2026-11-21; bead `d96.9.7`, closed with the epic).**
+The number pass stays off by default, and everything built here stays as
+tools: the pass as an option (`--structnum=1`) and census tool, the readers,
+the two catalogs, `one-way` and `live_set.py`. The blind equal-variables
+step is not built into the solver. The owner chose this over two other
+ways that were put beside it: building the blind step into the solver, and
+opening a new question, whether stronger reasoning over the face counts
+(cutting planes) would shorten a refutation. That question is not measured
+and not started; it is noted in bead `SAT-playground-dqk`.
+
 ### The Z3 catalog (2026-11-18; bead `SAT-playground-d96.9.1`)
 
 **What it is.** `tools/z3_catalog.py build` makes one toy per primitive and
@@ -9617,7 +9627,7 @@ check). The other refutations of these runs were not written out as proofs.
 **What it means.** The pass is sound, cheap enough and does what it was
 built to do, and the thing it does is not what these cells lack. It stays
 in the solver as an option (`--structnum=1`, off) and as the census tool.
-The owner's decision is bead `d96.9.7`.
+The owner decided on 2026-11-21 that it stays off (bead `d96.9.7`).
 
 ## A reader that is blind to the encoding (2026-11-19 to 21; beads `SAT-playground-d96.9.8` to `d96.9.13`)
 
@@ -10664,6 +10674,10 @@ writes its case solvers' clauses into the proof (refused now).
   read (cutting planes, as the count engine has for counts) would shorten a
   refutation was not asked here. Run 8 says only that making the face
   counts propagate does not.
+- *The owner's decision (2026-11-21).* The number pass stays off, and
+  everything stays as tools; the blind step is not built into the solver.
+  The question in the item above stays open and is noted in bead
+  `SAT-playground-dqk`.
 
 Tools: `tools/one-way` (Rust; `cargo test`, 15 tests),
 `tools/oneway_census.py` (`selftest`, `census`, `report`, `close`),
