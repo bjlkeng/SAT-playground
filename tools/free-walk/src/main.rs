@@ -3,10 +3,15 @@
 //!
 //! Input: the role reading that `tools/free_walk.py export` writes from
 //! `tools/free_census.py`: the units, the groups (one value each: the member
-//! that is true, or none in an at-most-one group), the free variables, every
+//! that is true, or none in an at-most-one group; in an order group, a number
+//! stored as sorted bits, the value is how many of its members are true, the
+//! first ones, bead SAT-playground-d96.10), the free variables, every
 //! other variable in the order it is computed (an OR of literals, a small
 //! gate, or a one-way helper set to its best value), and the constraint
-//! clauses that no role makes true.
+//! clauses that no role makes true. A reading with order groups (file magic
+//! FWR2) can also hold count constraints: exactly one of these literals is true
+//! (the pyramid's "each cube at one position"); a count that is off by k, or at
+//! none, counts as k, or 1, false clauses.
 //!
 //! The search state is one value per group and one bit per free variable.
 //! Every other variable is recomputed after each move, incrementally (counts
@@ -40,6 +45,7 @@ const K_FREE: u8 = 3;
 const K_OR: u8 = 4;
 const K_GATE: u8 = 5;
 const K_HELPER: u8 = 6;
+const K_TEST: u8 = 7; // true when each of its order groups has a value in its stretch
 
 // who reads a variable: an OR input, a helper clause, a gate support, a constraint clause
 const R_OR: u8 = 0;
@@ -106,7 +112,7 @@ struct Model {
     fixed: Vec<u8>,
     g_start: Vec<u32>, // group g's members: g_lit[g_start[g]..g_start[g + 1]]
     g_lit: Vec<u32>,
-    g_none: Vec<u8>, // an at-most-one group: "none" is a value too (the last one)
+    g_none: Vec<u8>, // 1 an at-most-one group: "none" is a value too (the last one); 2 an order group
     var_group: Vec<u32>,
     free: Vec<u32>,
     var_free: Vec<u32>,
@@ -115,19 +121,48 @@ struct Model {
     n_neg: Vec<u8>, // OR: the output literal is negative; helper: the helper literal is
     n_tt: Vec<u32>,
     n_start: Vec<u32>, // node n's inputs: n_in[n_start[n]..n_start[n + 1]]
-    n_in: Vec<u32>,    // OR: input literal codes; gate: support variables; helper: its helper clauses
+    n_in: Vec<u32>,    // OR: input literal codes; gate: support variables; helper: its helper clauses;
+                       // test: (group, lowest value, highest value) three at a time
     var_node: Vec<u32>,
     hc_start: Vec<u32>, // a helper clause's other literals
     hc_lit: Vec<u32>,
     hc_node: Vec<u32>,
-    c_start: Vec<u32>,
+    c_start: Vec<u32>, // the constraints: first the clauses, then the count constraints
     c_lit: Vec<u32>,
+    ncl: usize, // how many of the constraints are clauses
     r_start: Vec<u32>, // readers of variable v: r_tgt/r_kn[r_start[v]..r_start[v + 1]]
     r_tgt: Vec<u32>,
     r_kn: Vec<u8>,   // kind | neg << 2
     r_aux: Vec<u32>, // a helper clause's node
     n_level: Vec<u32>, // 1 + the highest level of a node's inputs (the sources are level 0)
     max_level: usize,
+    // a reading with order groups: a computed variable that no constraint clause
+    // reads, directly or through other computed variables, is not kept up to date
+    // during the search (idle); the model's values are computed at the end
+    idle: Vec<bool>, // per variable
+    n_idle: usize,
+    // the tests that read order group g at value v (their stretch for g holds v):
+    // tv_node/tv_lo/tv_hi[tv_start[gv_base[g] + v]..tv_start[gv_base[g] + v + 1]]
+    gv_base: Vec<u32>,
+    tv_start: Vec<u32>,
+    tv_node: Vec<u32>,
+    tv_lo: Vec<u32>,
+    tv_hi: Vec<u32>,
+    // Families: the tests over one and the same list of order groups that each ask for
+    // one value of every group (the pyramid's placements at one position: label x is a,
+    // label y is b, label z is c). At most one member of a family is on, the one whose
+    // values are the groups' values; a table gives it, so a move turns one member off
+    // and one on with no look at the others.
+    fam_of: Vec<u32>,     // per node: its family
+    fam_pos: Vec<u32>,    // per node: its place in the family's table
+    f_tab_start: Vec<u32>, // family f's table: f_tab[f_tab_start[f]..f_tab_start[f + 1]], a node or u32::MAX
+    f_tab: Vec<u32>,
+    f_start: Vec<u32>, // family f's groups and their strides in the table
+    f_group: Vec<u32>,
+    f_stride: Vec<u32>,
+    gf_start: Vec<u32>, // per group: the families that hold it, with its stride there
+    gf_fam: Vec<u32>,
+    gf_stride: Vec<u32>,
 }
 
 struct Ints {
@@ -160,8 +195,13 @@ impl Model {
         (self.g_start[g + 1] - self.g_start[g]) as usize
     }
     /// Values of group g: its members, and "none" (the last) in an at-most-one group.
+    /// An order group of k members has the k + 1 values 0..=k: value v is "the first
+    /// v members true, the rest false".
     fn gvalues(&self, g: usize) -> usize {
-        self.gsize(g) + self.g_none[g] as usize
+        self.gsize(g) + (self.g_none[g] != 0) as usize
+    }
+    fn ordered(&self, g: usize) -> bool {
+        self.g_none[g] == 2
     }
     fn nnodes(&self) -> usize {
         self.n_out.len()
@@ -175,9 +215,10 @@ impl Model {
         std::fs::File::open(path)
             .and_then(|mut f| f.read_to_end(&mut d))
             .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-        if d.len() < 4 || &d[..4] != b"FWR1" {
-            fail("not a free-walk reading (magic FWR1)");
+        if d.len() < 4 || !(&d[..4] == b"FWR1" || &d[..4] == b"FWR2") {
+            fail("not a free-walk reading (magic FWR1 or FWR2)");
         }
+        let with_counts = &d[..4] == b"FWR2";
         let mut r = Ints { d, p: 4 };
         let nv = r.count();
         let var = |r: &mut Ints, what: &str| -> usize {
@@ -214,7 +255,7 @@ impl Model {
         for g in 0..ng {
             let none = r.next();
             let k = r.count();
-            if k == 0 || !(none == 0 || none == 1) {
+            if k == 0 || !(none == 0 || none == 1 || none == 2) {
                 fail("a bad group");
             }
             for _ in 0..k {
@@ -314,6 +355,32 @@ impl Model {
                     }
                     (lvar(y), lneg(y))
                 }
+                7 => {
+                    let o = lit(&mut r, "test output");
+                    let k = r.count();
+                    if k == 0 || k > 255 {
+                        fail("a test over no group, or over more than 255");
+                    }
+                    for i in 0..k {
+                        let g = r.count();
+                        let (lo, hi) = (r.count(), r.count());
+                        if g >= ng || g_none[g] != 2 {
+                            fail("a test on a group that is not an order group");
+                        }
+                        let top = (g_start[g + 1] - g_start[g]) as usize;
+                        if lo > top || hi > top {
+                            fail("a test on a value the group does not have");
+                        }
+                        let a = n_in.len() - 3 * i;
+                        if (0..i).any(|q| n_in[a + 3 * q] as usize == g) {
+                            fail("a test that names a group twice");
+                        }
+                        n_in.push(g as u32);
+                        n_in.push(lo as u32);
+                        n_in.push(hi as u32);
+                    }
+                    (lvar(o), lneg(o))
+                }
                 _ => fail(&format!("unknown node kind {kd}")),
             };
             if kd != 5 {
@@ -325,6 +392,7 @@ impl Model {
             kind[out] = match kd {
                 4 => K_OR,
                 5 => K_GATE,
+                7 => K_TEST,
                 _ => K_HELPER,
             };
             var_node[out] = n as u32;
@@ -349,6 +417,29 @@ impl Model {
                 c_lit.push(c);
             }
             c_start.push(c_lit.len() as u32);
+        }
+        let ncl = nc;
+        if with_counts {
+            // count constraints: exactly one of the literals is true
+            let nx = r.count();
+            for _ in 0..nx {
+                let k = r.count();
+                if k < 2 {
+                    fail("a count constraint over fewer than two literals");
+                }
+                let a = c_lit.len();
+                for _ in 0..k {
+                    let c = lit(&mut r, "count constraint");
+                    if !settled(&kind, lvar(c)) {
+                        fail(&format!("a count constraint reads variable {} that has no role", lvar(c)));
+                    }
+                    if c_lit[a..].iter().any(|&o| lvar(o) == lvar(c)) {
+                        fail("a count constraint that names a variable twice");
+                    }
+                    c_lit.push(c);
+                }
+                c_start.push(c_lit.len() as u32);
+            }
         }
         if r.p != r.d.len() {
             fail("trailing data after the reading");
@@ -375,16 +466,217 @@ impl Model {
             hc_node,
             c_start,
             c_lit,
+            ncl,
             r_start: Vec::new(),
             r_tgt: Vec::new(),
             r_kn: Vec::new(),
             r_aux: Vec::new(),
             n_level: Vec::new(),
             max_level: 0,
+            idle: Vec::new(),
+            n_idle: 0,
+            gv_base: Vec::new(),
+            tv_start: Vec::new(),
+            tv_node: Vec::new(),
+            tv_lo: Vec::new(),
+            tv_hi: Vec::new(),
+            fam_of: Vec::new(),
+            fam_pos: Vec::new(),
+            f_tab_start: vec![0],
+            f_tab: Vec::new(),
+            f_start: vec![0],
+            f_group: Vec::new(),
+            f_stride: Vec::new(),
+            gf_start: Vec::new(),
+            gf_fam: Vec::new(),
+            gf_stride: Vec::new(),
         };
+        m.find_idle();
         m.build_readers();
+        m.build_families();
+        m.build_tests();
         m.build_levels();
         m
+    }
+
+    fn nfamilies(&self) -> usize {
+        self.f_start.len() - 1
+    }
+
+    /// The families of tests (see the fields). The tests that ask for one value of each of
+    /// their groups are sorted by their list of groups. A list gets a table when at least
+    /// two tests share it and the table (one place for every combination of the groups'
+    /// values) has at most 64 places a test and 2^20 in all; the tables together stay under
+    /// 2^26 places. A test without a table, or whose place is taken, is left to the lists by
+    /// value, which cost memory by the test and not by the combinations.
+    fn build_families(&mut self) {
+        const TABLE_MAX: usize = 1 << 20;
+        const TABLES_MAX: usize = 1 << 26;
+        const PLACES_A_TEST: usize = 64;
+        let nn = self.n_out.len();
+        self.fam_of = vec![u32::MAX; nn];
+        self.fam_pos = vec![0; nn];
+        let mut by_key: std::collections::HashMap<Vec<u32>, Vec<u32>> = std::collections::HashMap::new();
+        for n in 0..nn {
+            if self.n_kind[n] != K_TEST || self.idle[self.n_out[n] as usize] {
+                continue;
+            }
+            if self.tests(n).any(|(_, lo, hi)| lo != hi) {
+                continue;
+            }
+            let key: Vec<u32> = self.tests(n).map(|t| t.0 as u32).collect();
+            by_key.entry(key).or_default().push(n as u32);
+        }
+        // in the order of each list's first test, so the tables do not depend on the map's order
+        let mut keys: Vec<(Vec<u32>, Vec<u32>)> = by_key.into_iter().collect();
+        keys.sort_by_key(|(_, nodes)| nodes[0]);
+        let mut gf: Vec<Vec<(u32, u32)>> = vec![Vec::new(); self.ngroups()];
+        for (key, nodes) in keys {
+            let mut size = 1usize;
+            for &g in &key {
+                size = size.saturating_mul(self.gvalues(g as usize));
+            }
+            if nodes.len() < 2
+                || size > TABLE_MAX
+                || size > PLACES_A_TEST * nodes.len()
+                || self.f_tab.len() + size > TABLES_MAX
+            {
+                continue;
+            }
+            let f = self.nfamilies();
+            let a = self.f_group.len();
+            let mut stride = 1u32;
+            for &g in &key {
+                self.f_group.push(g);
+                self.f_stride.push(stride);
+                gf[g as usize].push((f as u32, stride));
+                stride *= self.gvalues(g as usize) as u32;
+            }
+            self.f_start.push(self.f_group.len() as u32);
+            let t0 = self.f_tab.len();
+            self.f_tab.resize(t0 + size, u32::MAX);
+            self.f_tab_start.push(self.f_tab.len() as u32);
+            for &n in &nodes {
+                let n = n as usize;
+                let pos: u32 = self.tests(n).enumerate().map(|(i, t)| t.1 as u32 * self.f_stride[a + i]).sum();
+                let slot = t0 + pos as usize;
+                if self.f_tab[slot] != u32::MAX {
+                    continue; // a second test for the same values: left to the lists by value
+                }
+                self.f_tab[slot] = n as u32;
+                self.fam_of[n] = f as u32;
+                self.fam_pos[n] = pos;
+            }
+        }
+        self.gf_start = vec![0];
+        for l in &gf {
+            for &(f, st) in l {
+                self.gf_fam.push(f);
+                self.gf_stride.push(st);
+            }
+            self.gf_start.push(self.gf_fam.len() as u32);
+        }
+    }
+
+    /// The tests of node n: (group, lowest value, highest value).
+    fn tests(&self, n: usize) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+        let (a, b) = (self.n_start[n] as usize, self.n_start[n + 1] as usize);
+        self.n_in[a..b].chunks_exact(3).map(|t| (t[0] as usize, t[1] as usize, t[2] as usize))
+    }
+
+    /// For every order group and value: the tests whose stretch holds that value.
+    fn build_tests(&mut self) {
+        let ng = self.ngroups();
+        let mut base = Vec::with_capacity(ng + 1);
+        let mut tot = 0u32;
+        for g in 0..ng {
+            base.push(tot);
+            tot += self.gvalues(g) as u32;
+        }
+        base.push(tot);
+        let mut cnt = vec![0u32; tot as usize + 1];
+        let live: Vec<usize> = (0..self.n_out.len())
+            .filter(|&n| self.n_kind[n] == K_TEST && !self.idle[self.n_out[n] as usize] && self.fam_of[n] == u32::MAX)
+            .collect();
+        for &n in &live {
+            for (g, lo, hi) in self.tests(n) {
+                for v in lo..=hi.min(self.gvalues(g) - 1) {
+                    cnt[base[g] as usize + v + 1] += 1;
+                }
+            }
+        }
+        for i in 1..cnt.len() {
+            cnt[i] += cnt[i - 1];
+        }
+        let total = cnt[tot as usize] as usize;
+        let (mut node, mut los, mut his) = (vec![0u32; total], vec![0u32; total], vec![0u32; total]);
+        let mut fill = cnt.clone();
+        for &n in &live {
+            let ts: Vec<(usize, usize, usize)> = self.tests(n).collect();
+            for (g, lo, hi) in ts {
+                for v in lo..=hi.min(self.gvalues(g) - 1) {
+                    let p = fill[base[g] as usize + v] as usize;
+                    node[p] = n as u32;
+                    los[p] = lo as u32;
+                    his[p] = hi as u32;
+                    fill[base[g] as usize + v] += 1;
+                }
+            }
+        }
+        self.gv_base = base;
+        self.tv_start = cnt;
+        self.tv_node = node;
+        self.tv_lo = los;
+        self.tv_hi = his;
+    }
+
+    /// The input variables of node n.
+    fn node_inputs(&self, n: usize, f: &mut dyn FnMut(usize)) {
+        let (a, b) = (self.n_start[n] as usize, self.n_start[n + 1] as usize);
+        match self.n_kind[n] {
+            K_OR => self.n_in[a..b].iter().for_each(|&c| f(lvar(c))),
+            K_GATE => self.n_in[a..b].iter().for_each(|&u| f(u as usize)),
+            K_TEST => {} // reads its groups' values, no variable
+            _ => {
+                for &h in &self.n_in[a..b] {
+                    let h = h as usize;
+                    for &c in &self.hc_lit[self.hc_start[h] as usize..self.hc_start[h + 1] as usize] {
+                        f(lvar(c));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Which computed variables no constraint clause depends on (only looked for in a
+    /// reading with order groups, so the counters of the other readings stay as they were).
+    fn find_idle(&mut self) {
+        let nv = self.nv;
+        self.idle = vec![false; nv + 1];
+        if !self.g_none.iter().any(|&k| k == 2) {
+            return;
+        }
+        let mut used = vec![false; nv + 1];
+        for &c in &self.c_lit {
+            used[lvar(c)] = true;
+        }
+        // the nodes are in computing order: an output comes after its inputs
+        for n in (0..self.n_out.len()).rev() {
+            if used[self.n_out[n] as usize] {
+                let mut ins = Vec::new();
+                self.node_inputs(n, &mut |u| ins.push(u));
+                for u in ins {
+                    used[u] = true;
+                }
+            }
+        }
+        for n in 0..self.n_out.len() {
+            let v = self.n_out[n] as usize;
+            if !used[v] {
+                self.idle[v] = true;
+                self.n_idle += 1;
+            }
+        }
     }
 
     fn build_readers(&mut self) {
@@ -392,6 +684,9 @@ impl Model {
         let mut cnt = vec![0u32; nv + 2];
         let each = |f: &mut dyn FnMut(usize, u32, u32, u8)| {
             for n in 0..self.n_out.len() {
+                if self.idle[self.n_out[n] as usize] {
+                    continue; // not kept up to date: nothing tells it of a change
+                }
                 let (a, b) = (self.n_start[n] as usize, self.n_start[n + 1] as usize);
                 match self.n_kind[n] {
                     K_OR => {
@@ -404,6 +699,7 @@ impl Model {
                             f(u as usize, n as u32, 0, R_GATE);
                         }
                     }
+                    K_TEST => {}
                     _ => {
                         for &h in &self.n_in[a..b] {
                             let h = h as usize;
@@ -460,6 +756,7 @@ impl Model {
             match self.n_kind[n] {
                 K_OR => self.n_in[a..b].iter().for_each(|&c| see(lvar(c))),
                 K_GATE => self.n_in[a..b].iter().for_each(|&u| see(u as usize)),
+                K_TEST => {}
                 _ => {
                     for &h in &self.n_in[a..b] {
                         let h = h as usize;
@@ -481,6 +778,16 @@ impl Model {
 // the search state
 // ---------------------------------------------------------------------------
 
+/// A count constraint with k of its literals true: off by k - 1, and by 1 with none.
+#[inline]
+fn off_by(k: u32) -> u64 {
+    if k == 0 {
+        1
+    } else {
+        (k - 1) as u64
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Src {
     Group(u32),
@@ -499,7 +806,8 @@ struct Cand {
 struct State {
     val: Vec<u8>,
     g_cur: Vec<u32>,
-    or_cnt: Vec<u32>, // per node: true inputs of an OR
+    or_cnt: Vec<u32>, // per node: true inputs of an OR; a test: its groups whose value is in the stretch
+    fam_idx: Vec<u32>, // per family: the place in its table of the groups' values
     hz: Vec<u8>,      // per node: a helper's clauses with no other literal true
     hc_cnt: Vec<u8>,  // per helper clause: other literals true
     con_cnt: Vec<u32>,
@@ -515,6 +823,7 @@ struct State {
     flips: u64,
     upd: u64,
     pushes: u64,
+    upd_src: u64, // of the updates: those after a flip of a group member or a free variable
     // the constraint clauses a move touches, each with whether it was true
     // before the move: its break is the weight of those true before and
     // false after (a clause false only midway through the move is no break)
@@ -532,6 +841,7 @@ impl State {
             val: vec![0u8; nv + 1],
             g_cur: vec![0u32; m.ngroups()],
             or_cnt: vec![0u32; nn],
+            fam_idx: vec![0u32; m.nfamilies()],
             hz: vec![0u8; nn],
             hc_cnt: vec![0u8; m.hc_node.len()],
             con_cnt: vec![0u32; nc],
@@ -547,6 +857,7 @@ impl State {
             flips: 0,
             upd: 0,
             pushes: 0,
+            upd_src: 0,
             con_mark: vec![0u32; nc],
             epoch: 0,
             touched: Vec::new(),
@@ -571,15 +882,32 @@ impl State {
         (self.val[lvar(c)] ^ lneg(c)) == 1
     }
 
+    /// How far constraint c is from holding: a clause 1 when no literal is true, a
+    /// count constraint by how many its count is off (none true counts 1).
+    #[inline]
+    fn viol(&self, m: &Model, c: usize) -> u64 {
+        if c < m.ncl {
+            (self.con_cnt[c] == 0) as u64
+        } else {
+            off_by(self.con_cnt[c])
+        }
+    }
+
     /// Every computed variable and every count from the sources, from scratch.
     fn recompute(&mut self, m: &Model) {
         for g in 0..m.ngroups() {
             let a = m.g_start[g] as usize;
             let cur = self.g_cur[g] as usize;
+            let ordered = m.ordered(g);
             for j in 0..m.gsize(g) {
                 let c = m.g_lit[a + j];
-                self.val[lvar(c)] = (j == cur) as u8 ^ lneg(c);
+                let on = if ordered { j < cur } else { j == cur };
+                self.val[lvar(c)] = on as u8 ^ lneg(c);
             }
+        }
+        for f in 0..m.nfamilies() {
+            let (a, b) = (m.f_start[f] as usize, m.f_start[f + 1] as usize);
+            self.fam_idx[f] = (a..b).map(|i| self.g_cur[m.f_group[i] as usize] * m.f_stride[i]).sum();
         }
         for n in 0..m.nnodes() {
             let v = self.node_value(m, n, true);
@@ -594,10 +922,11 @@ impl State {
                 .count() as u32;
             self.con_cnt[ci] = k;
             self.fpos[ci] = u32::MAX;
-            if k == 0 {
+            let v = self.viol(m, ci);
+            if v > 0 {
                 self.fpos[ci] = self.fl.len() as u32;
                 self.fl.push(ci as u32);
-                self.cost += self.w[ci];
+                self.cost += self.w[ci] * v;
             }
         }
     }
@@ -619,6 +948,21 @@ impl State {
                     idx |= (self.val[u as usize] as usize) << k;
                 }
                 ((m.n_tt[n] >> idx) & 1) as u8
+            }
+            K_TEST if m.fam_of[n] != u32::MAX => {
+                (self.fam_idx[m.fam_of[n] as usize] == m.fam_pos[n]) as u8 ^ m.n_neg[n]
+            }
+            K_TEST => {
+                if count {
+                    self.or_cnt[n] = m
+                        .tests(n)
+                        .filter(|&(g, lo, hi)| {
+                            let v = self.g_cur[g] as usize;
+                            lo <= v && v <= hi
+                        })
+                        .count() as u32;
+                }
+                (self.or_cnt[n] as usize == (b - a) / 3) as u8 ^ m.n_neg[n]
             }
             _ => {
                 if count {
@@ -645,6 +989,7 @@ impl State {
             val: self.val.clone(),
             g_cur: self.g_cur.clone(),
             or_cnt: vec![0; self.or_cnt.len()],
+            fam_idx: vec![0; self.fam_idx.len()],
             hz: vec![0; self.hz.len()],
             hc_cnt: vec![0; self.hc_cnt.len()],
             con_cnt: vec![0; self.con_cnt.len()],
@@ -660,26 +1005,36 @@ impl State {
             flips: 0,
             upd: 0,
             pushes: 0,
+            upd_src: 0,
             con_mark: Vec::new(),
             epoch: 0,
             touched: Vec::new(),
         };
         t.recompute(m);
         for v in 1..=m.nv {
-            if t.val[v] != self.val[v] {
+            if t.val[v] != self.val[v] && !m.idle[v] {
                 return Err(format!("variable {v}: {} incrementally, {} recomputed", self.val[v], t.val[v]));
             }
         }
         for n in 0..m.nnodes() {
-            if m.n_kind[n] == K_OR && t.or_cnt[n] != self.or_cnt[n] {
-                return Err(format!("OR node {n}: count {} v {}", self.or_cnt[n], t.or_cnt[n]));
+            if m.idle[m.n_out[n] as usize] {
+                continue;
+            }
+            let counted = m.n_kind[n] == K_OR || (m.n_kind[n] == K_TEST && m.fam_of[n] == u32::MAX);
+            if counted && t.or_cnt[n] != self.or_cnt[n] {
+                return Err(format!("OR or test node {n}: count {} v {}", self.or_cnt[n], t.or_cnt[n]));
             }
             if m.n_kind[n] == K_HELPER && t.hz[n] != self.hz[n] {
                 return Err(format!("helper node {n}: zero count {} v {}", self.hz[n], t.hz[n]));
             }
         }
-        if t.hc_cnt != self.hc_cnt {
-            return Err("helper clause counts differ".into());
+        for h in 0..m.hc_node.len() {
+            if t.hc_cnt[h] != self.hc_cnt[h] && !m.idle[m.n_out[m.hc_node[h] as usize] as usize] {
+                return Err("helper clause counts differ".into());
+            }
+        }
+        if t.fam_idx != self.fam_idx {
+            return Err("the families' places differ".into());
         }
         if t.con_cnt != self.con_cnt {
             return Err("constraint counts differ".into());
@@ -688,7 +1043,7 @@ impl State {
             return Err(format!("cost {} / {} false v {} / {}", self.cost, self.fl.len(), t.cost, t.fl.len()));
         }
         for (i, &c) in self.fl.iter().enumerate() {
-            if self.fpos[c as usize] != i as u32 || self.con_cnt[c as usize] != 0 {
+            if self.fpos[c as usize] != i as u32 || self.viol(m, c as usize) == 0 {
                 return Err("the false list is out of step".into());
             }
         }
@@ -714,6 +1069,9 @@ impl State {
         let b = self.val[v];
         let (a, e) = (m.r_start[v] as usize, m.r_start[v + 1] as usize);
         self.upd += (e - a) as u64;
+        if m.kind[v] == K_CHOICE || m.kind[v] == K_FREE {
+            self.upd_src += (e - a) as u64;
+        }
         for p in a..e {
             let t = m.r_tgt[p] as usize;
             let kn = m.r_kn[p];
@@ -756,6 +1114,29 @@ impl State {
                     if sched {
                         self.push(t, m.n_level[t] as usize);
                     }
+                }
+                _ if t >= m.ncl => {
+                    // a count constraint: exactly one of its literals true
+                    let k = self.con_cnt[t];
+                    let (v0, v1) = (off_by(k), off_by(if now { k + 1 } else { k - 1 }));
+                    if sched && self.con_mark[t] != self.epoch {
+                        self.con_mark[t] = self.epoch;
+                        self.touched.push((t as u32, v0 == 0));
+                    }
+                    self.con_cnt[t] = if now { k + 1 } else { k - 1 };
+                    if v0 == 0 && v1 > 0 {
+                        self.fpos[t] = self.fl.len() as u32;
+                        self.fl.push(t as u32);
+                    } else if v0 > 0 && v1 == 0 {
+                        let i = self.fpos[t] as usize;
+                        let last = self.fl.pop().unwrap();
+                        if last as usize != t {
+                            self.fl[i] = last;
+                            self.fpos[last as usize] = i as u32;
+                        }
+                        self.fpos[t] = u32::MAX;
+                    }
+                    self.cost = self.cost + self.w[t] * v1 - self.w[t] * v0;
                 }
                 _ => {
                     if sched && self.con_mark[t] != self.epoch {
@@ -827,15 +1208,26 @@ impl State {
                 old = self.g_cur[g];
                 let a = m.g_start[g] as usize;
                 let k = m.gsize(g) as u32;
-                if old < k {
-                    let v = lvar(m.g_lit[a + old as usize]);
-                    self.trail.push(v as u32);
-                    self.flip(m, v, true);
-                }
-                if value < k {
-                    let v = lvar(m.g_lit[a + value as usize]);
-                    self.trail.push(v as u32);
-                    self.flip(m, v, true);
+                if m.ordered(g) {
+                    // the members between the old prefix and the new one change
+                    for j in old.min(value)..old.max(value) {
+                        let v = lvar(m.g_lit[a + j as usize]);
+                        self.trail.push(v as u32);
+                        self.flip(m, v, true);
+                    }
+                    self.move_tests(m, g, old as usize, value as usize, true);
+                    self.move_families(m, g, old as usize, value as usize, true);
+                } else {
+                    if old < k {
+                        let v = lvar(m.g_lit[a + old as usize]);
+                        self.trail.push(v as u32);
+                        self.flip(m, v, true);
+                    }
+                    if value < k {
+                        let v = lvar(m.g_lit[a + value as usize]);
+                        self.trail.push(v as u32);
+                        self.flip(m, v, true);
+                    }
                 }
                 self.g_cur[g] = value;
             }
@@ -852,23 +1244,23 @@ impl State {
 
     /// The weight of the constraint clauses the last move made false that
     /// were true before it.
-    fn last_break(&self) -> i64 {
+    fn last_break(&self, m: &Model) -> i64 {
         self.touched
             .iter()
-            .filter(|&&(c, was)| was && self.con_cnt[c as usize] == 0)
+            .filter(|&&(c, was)| was && self.viol(m, c as usize) > 0)
             .map(|&(c, _)| self.w[c as usize] as i64)
             .sum()
     }
 
-    /// Which constraint clauses are true now (for --check).
-    fn true_now(&self) -> Vec<bool> {
-        self.con_cnt.iter().map(|&c| c > 0).collect()
+    /// Which constraints hold now (for --check).
+    fn true_now(&self, m: &Model) -> Vec<bool> {
+        (0..self.con_cnt.len()).map(|c| self.viol(m, c) == 0).collect()
     }
 
-    /// --check: the move's break against the clauses true before and false after.
-    fn check_break(&self, before: &[bool], br: i64) {
+    /// --check: the move's break against the constraints that held before and do not after.
+    fn check_break(&self, m: &Model, before: &[bool], br: i64) {
         let want: i64 = (0..before.len())
-            .filter(|&c| before[c] && self.con_cnt[c] == 0)
+            .filter(|&c| before[c] && self.viol(m, c) > 0)
             .map(|c| self.w[c] as i64)
             .sum();
         if want != br {
@@ -881,7 +1273,73 @@ impl State {
             self.flip(m, v as usize, false);
         }
         if let Src::Group(g) = src {
-            self.g_cur[g as usize] = old;
+            let g = g as usize;
+            if m.ordered(g) {
+                let now = self.g_cur[g] as usize;
+                self.move_tests(m, g, now, old as usize, false);
+                self.move_families(m, g, now, old as usize, false);
+            }
+            self.g_cur[g] = old;
+        }
+    }
+
+    /// Order group g goes from value a to value b: in every family that holds it the
+    /// place moves; with `sched` the member at the old place and the one at the new
+    /// place are queued.
+    fn move_families(&mut self, m: &Model, g: usize, a: usize, b: usize, sched: bool) {
+        let (s0, s1) = (m.gf_start[g] as usize, m.gf_start[g + 1] as usize);
+        self.upd += (s1 - s0) as u64;
+        for p in s0..s1 {
+            let f = m.gf_fam[p] as usize;
+            let st = m.gf_stride[p] as i64;
+            let old = self.fam_idx[f];
+            let new = (old as i64 + (b as i64 - a as i64) * st) as u32;
+            self.fam_idx[f] = new;
+            if sched {
+                let t0 = m.f_tab_start[f] as usize;
+                for place in [old, new] {
+                    let n = m.f_tab[t0 + place as usize];
+                    if n != u32::MAX {
+                        self.push(n as usize, m.n_level[n as usize] as usize);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Order group g goes from value a to value b: the tests whose stretch holds one
+    /// of the two and not the other gain or lose it; with `sched` a test that turns
+    /// on or off is queued.
+    fn move_tests(&mut self, m: &Model, g: usize, a: usize, b: usize, sched: bool) {
+        if a == b {
+            return;
+        }
+        let base = m.gv_base[g] as usize;
+        let (s0, s1) = (m.tv_start[base + a] as usize, m.tv_start[base + a + 1] as usize);
+        self.upd += (s1 - s0) as u64;
+        for p in s0..s1 {
+            if (m.tv_lo[p] as usize) <= b && b <= m.tv_hi[p] as usize {
+                continue; // the new value is in the stretch too
+            }
+            let n = m.tv_node[p] as usize;
+            let full = (m.n_start[n + 1] - m.n_start[n]) / 3;
+            if self.or_cnt[n] == full && sched {
+                self.push(n, m.n_level[n] as usize);
+            }
+            self.or_cnt[n] -= 1;
+        }
+        let (s0, s1) = (m.tv_start[base + b] as usize, m.tv_start[base + b + 1] as usize);
+        self.upd += (s1 - s0) as u64;
+        for p in s0..s1 {
+            if (m.tv_lo[p] as usize) <= a && a <= m.tv_hi[p] as usize {
+                continue;
+            }
+            let n = m.tv_node[p] as usize;
+            self.or_cnt[n] += 1;
+            let full = (m.n_start[n + 1] - m.n_start[n]) / 3;
+            if self.or_cnt[n] == full && sched {
+                self.push(n, m.n_level[n] as usize);
+            }
         }
     }
 
@@ -889,10 +1347,24 @@ impl State {
     /// whose change could make it true. The target literal is false at every
     /// step of the walk.
     /// The value asked for comes with a group: Some(member) when the walk
-    /// needs that member true, None when it needs the true member false.
+    /// needs that member true, None when it needs the true member false. For
+    /// an order group it is the nearest value that makes the literal true:
+    /// member j true needs a value above j, member j false a value of j or less.
     fn pick_source(&self, m: &Model, ci: usize, rng: &mut Rng) -> Option<(Src, Option<u32>)> {
         let (a, b) = (m.c_start[ci] as usize, m.c_start[ci + 1] as usize);
         let mut t = m.c_lit[a + rng.below(b - a)];
+        if ci >= m.ncl && self.con_cnt[ci] > 1 {
+            // a count that is too high: one of its true literals has to turn false
+            let mut seen = 0;
+            for &c in &m.c_lit[a..b] {
+                if self.lit_true(c) {
+                    seen += 1;
+                    if rng.below(seen) == 0 {
+                        t = c ^ 1;
+                    }
+                }
+            }
+        }
         for _ in 0..WALK_DEPTH {
             let v = lvar(t);
             match m.kind[v] {
@@ -900,7 +1372,13 @@ impl State {
                     let g = m.var_group[v] as usize;
                     let a = m.g_start[g] as usize;
                     let j = (0..m.gsize(g)).find(|&j| lvar(m.g_lit[a + j]) == v).unwrap();
-                    let want = if m.g_lit[a + j] == t { Some(j as u32) } else { None };
+                    let want = if m.ordered(g) {
+                        Some(if m.g_lit[a + j] == t { j as u32 + 1 } else { j as u32 })
+                    } else if m.g_lit[a + j] == t {
+                        Some(j as u32)
+                    } else {
+                        None
+                    };
                     return Some((Src::Group(g as u32), want));
                 }
                 K_FREE => return Some((Src::Free(m.var_free[v]), None)),
@@ -969,6 +1447,27 @@ impl State {
                         t = m.hc_lit[ha + rng.below(hb - ha)];
                     }
                 }
+                K_TEST => {
+                    let n = m.var_node[v] as usize;
+                    let want_on = (1 ^ lneg(t)) ^ m.n_neg[n];
+                    // to turn it on: a group whose value is outside its stretch, to the nearest
+                    // value inside; to turn it off: any of its groups, to a value outside
+                    let mut pick = None;
+                    let mut seen = 0;
+                    for (g, lo, hi) in m.tests(n) {
+                        let cur = self.g_cur[g] as usize;
+                        let inside = lo <= cur && cur <= hi;
+                        if (want_on == 1) == inside {
+                            continue;
+                        }
+                        seen += 1;
+                        if rng.below(seen) == 0 {
+                            pick = Some((g, if cur < lo { lo } else { hi }));
+                        }
+                    }
+                    let (g, near) = pick?;
+                    return Some((Src::Group(g as u32), if want_on == 1 { Some(near as u32) } else { None }));
+                }
                 K_GATE => {
                     let n = m.var_node[v] as usize;
                     let (a, b) = (m.n_start[n] as usize, m.n_start[n + 1] as usize);
@@ -1023,6 +1522,7 @@ struct Params {
     check: u64,
     progress: f64,
     dump: bool,
+    dump_best: bool,
 }
 
 fn usage() -> ! {
@@ -1030,10 +1530,11 @@ fn usage() -> ! {
         "usage: free-walk READING [--seed N] [--seconds S] [--steps N] [--noise P] [--cands N]\n\
          \x20                [--tenure N] [--tenure-rand N] [--weights none|clause|all] [--smooth N]\n\
          \x20                [--values all|target] [--score net|break] [--bump-at chosen|best] [--phase S]\n\
-         \x20                [--check N] [--progress S] [--dump]\n\
+         \x20                [--check N] [--progress S] [--dump] [--dump-best]\n\
          defaults: seed 0, 60 s, noise 0.05, 16 candidates, no tabu, weights all, smooth 3,\n\
          values all, score net, bump at chosen, phase 30 s; --check N recomputes the state every N\n\
-         steps and stops on a difference; --dump prints the assignment where the search stopped"
+         steps and stops on a difference; --dump prints the assignment where the search stopped,\n\
+         --dump-best the one with the fewest false constraints that it passed through"
     );
     std::process::exit(2);
 }
@@ -1061,6 +1562,7 @@ fn main() {
         check: 0,
         progress: 10.0,
         dump: false,
+        dump_best: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -1118,6 +1620,12 @@ fn main() {
                 i += 1;
                 continue;
             }
+            "--dump-best" => {
+                p.dump = true;
+                p.dump_best = true;
+                i += 1;
+                continue;
+            }
             _ if a.starts_with("--") => usage(),
             _ => {
                 if path.is_some() {
@@ -1145,11 +1653,25 @@ fn main() {
         m.g_lit.len(),
         m.free.len(),
         m.nnodes(),
-        m.ncons(),
+        m.ncl,
         load_s,
         init_false,
         p.seed
     );
+    if m.ncons() > m.ncl {
+        println!(
+            "c free-walk: {} count constraints (exactly one literal true), counted with the false clauses",
+            m.ncons() - m.ncl
+        );
+    }
+    if m.g_none.iter().any(|&k| k == 2) {
+        println!(
+            "c free-walk: {} order groups; {} computed variables that no constraint reads are not kept up to date",
+            m.g_none.iter().filter(|&&k| k == 2).count(),
+            m.n_idle
+        );
+    }
+    let ordered_run = m.g_none.iter().any(|&k| k == 2);
     let r = search(&m, &mut s, &p, &mut rng, t0);
     let secs = t0.elapsed().as_secs_f64() - load_s;
     let out = std::io::stdout();
@@ -1178,6 +1700,24 @@ fn main() {
     } else {
         let _ = writeln!(out, "s UNKNOWN");
     }
+    if let (false, Some((g, f))) = (r.found, &r.best_state) {
+        // --dump-best: back to the choices with the fewest false constraints
+        s.g_cur.clone_from(g);
+        for (i, &v) in m.free.iter().enumerate() {
+            s.val[v as usize] = f[i];
+        }
+        s.recompute(&m);
+        if s.fl.len() != r.best {
+            fail("the best state does not recompute to its count of false constraints");
+        }
+    } else if m.n_idle > 0 && (r.found || p.dump) {
+        // the variables that were not kept up to date: every value from the sources again
+        let before = s.fl.len();
+        s.recompute(&m);
+        if s.fl.len() != before {
+            fail("the recomputed state has another count of false clauses");
+        }
+    }
     if r.found || p.dump {
         // the model, or with --dump the assignment where the search stopped
         let mut line = String::from("v");
@@ -1197,19 +1737,20 @@ fn main() {
         line.push_str(" 0");
         let _ = writeln!(out, "{line}");
     }
+    if ordered_run {
+        let _ = writeln!(out, "c free-walk: of the updates, {} follow a flip of a choice's own variable", s.upd_src);
+    }
     let _ = out.flush();
     std::process::exit(if r.found { 10 } else { 0 });
 }
 
-fn heavier(s: &mut State, heavy: &mut Vec<u32>, heavy_pos: &mut [u32], c: usize) {
+fn heavier(m: &Model, s: &mut State, heavy: &mut Vec<u32>, heavy_pos: &mut [u32], c: usize) {
     if s.w[c] == 1 {
         heavy_pos[c] = heavy.len() as u32;
         heavy.push(c as u32);
     }
     s.w[c] += 1;
-    if s.con_cnt[c] == 0 {
-        s.cost += 1;
-    }
+    s.cost += s.viol(m, c);
 }
 
 struct Outcome {
@@ -1218,6 +1759,7 @@ struct Outcome {
     trials: u64,
     best: usize,
     best_step: u64,
+    best_state: Option<(Vec<u32>, Vec<u8>)>, // with --dump-best: the groups' values and the free bits there
 }
 
 fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> Outcome {
@@ -1234,6 +1776,8 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
     let mut f_tabu = vec![0u64; m.free.len()];
     let mut best = s.fl.len();
     let mut best_step = 0u64;
+    let snapshot = |s: &State| (s.g_cur.clone(), m.free.iter().map(|&v| s.val[v as usize]).collect::<Vec<u8>>());
+    let mut best_state = if p.dump_best { Some(snapshot(s)) } else { None };
     let mut steps = 0u64;
     let mut trials = 0u64;
     let mut bumps = 0u64;
@@ -1245,7 +1789,7 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
     let mut last_progress = 0.0;
     loop {
         if s.fl.is_empty() {
-            return Outcome { found: true, steps, trials, best: 0, best_step: steps };
+            return Outcome { found: true, steps, trials, best: 0, best_step: steps, best_state: None };
         }
         if steps >= p.max_steps {
             break;
@@ -1263,7 +1807,7 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
                             heavy_pos[c as usize] = u32::MAX;
                         }
                         heavy.clear();
-                        s.cost = s.fl.len() as u64;
+                        s.cost = s.fl.iter().map(|&c| s.viol(m, c as usize)).sum();
                     }
                 }
             }
@@ -1310,11 +1854,11 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
                             continue;
                         }
                         let (c0, n0) = (s.cost as i64, s.fl.len() as i64);
-                        let before = if p.check > 0 { Some(s.true_now()) } else { None };
+                        let before = if p.check > 0 { Some(s.true_now(m)) } else { None };
                         let old = s.apply(m, src, b);
-                        let (dw, dn, br) = (s.cost as i64 - c0, s.fl.len() as i64 - n0, s.last_break());
+                        let (dw, dn, br) = (s.cost as i64 - c0, s.fl.len() as i64 - n0, s.last_break(m));
                         if let Some(bf) = &before {
-                            s.check_break(bf, br);
+                            s.check_break(m, bf, br);
                         }
                         s.undo(m, src, old);
                         trials += 1;
@@ -1326,11 +1870,11 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
                         continue;
                     }
                     let (c0, n0) = (s.cost as i64, s.fl.len() as i64);
-                    let before = if p.check > 0 { Some(s.true_now()) } else { None };
+                    let before = if p.check > 0 { Some(s.true_now(m)) } else { None };
                     let old = s.apply(m, src, 0);
-                    let (dw, dn, br) = (s.cost as i64 - c0, s.fl.len() as i64 - n0, s.last_break());
+                    let (dw, dn, br) = (s.cost as i64 - c0, s.fl.len() as i64 - n0, s.last_break(m));
                     if let Some(bf) = &before {
-                        s.check_break(bf, br);
+                        s.check_break(m, bf, br);
                     }
                     s.undo(m, src, old);
                     trials += 1;
@@ -1396,11 +1940,11 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
             // clause gets lighter by one
             bumps += 1;
             if p.wmode == 1 {
-                heavier(s, &mut heavy, &mut heavy_pos, ci);
+                heavier(m, s, &mut heavy, &mut heavy_pos, ci);
             } else {
                 for i in 0..s.fl.len() {
                     let c = s.fl[i] as usize;
-                    heavier(s, &mut heavy, &mut heavy_pos, c);
+                    heavier(m, s, &mut heavy, &mut heavy_pos, c);
                 }
             }
             if p.smooth > 0 && bumps % p.smooth == 0 {
@@ -1409,9 +1953,7 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
                     i -= 1;
                     let c = heavy[i] as usize;
                     s.w[c] -= 1;
-                    if s.con_cnt[c] == 0 {
-                        s.cost -= 1;
-                    }
+                    s.cost -= s.viol(m, c);
                     if s.w[c] == 1 {
                         let last = heavy.pop().unwrap();
                         if i < heavy.len() {
@@ -1426,6 +1968,9 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
         if s.fl.len() < best {
             best = s.fl.len();
             best_step = steps;
+            if p.dump_best {
+                best_state = Some(snapshot(s));
+            }
         }
         if p.check > 0 && steps % p.check == 0 {
             if let Err(e) = s.check(m) {
@@ -1433,5 +1978,5 @@ fn search(m: &Model, s: &mut State, p: &Params, rng: &mut Rng, t0: Instant) -> O
             }
         }
     }
-    Outcome { found: false, steps, trials, best, best_step }
+    Outcome { found: false, steps, trials, best, best_step, best_state }
 }

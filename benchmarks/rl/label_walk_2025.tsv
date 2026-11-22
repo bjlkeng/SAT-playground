@@ -1,0 +1,61 @@
+stem	family	read_s	arm	seed	model_s	check	walk_best	walk_steps
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	prototype	0			7	6867456
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	prototype	1			10	6868992
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	prototype	2			10	6844160
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	shipped	0				
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	shipped	1				
+1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	pyramid	200.6	shipped	2				
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	prototype	0			10	6012928
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	prototype	1			12	6031104
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	prototype	2			10	5933824
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	shipped	0	968.5	ok		
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	shipped	1				
+dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	pyramid	211.4	shipped	2	990.5	ok		
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	prototype	0			6	6540544
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	prototype	1			7	6488576
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	prototype	2			7	6575360
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	shipped	0	1649.7	ok		
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	shipped	1				
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	pyramid	200.7	shipped	2				
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	prototype	0			2	14850304
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	prototype	1			2	15812864
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	prototype	2			2	14332672
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	shipped	0	119.7	ok		
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	shipped	1	1593.1	ok		
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	pyramid	313.8	shipped	2	1547.6	ok		
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	prototype	0			4	6998784
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	prototype	1			6	7024640
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	prototype	2			4	7045120
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	shipped	0	575.1	ok		
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	shipped	1				
+c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	pyramid	273.3	shipped	2	107.1	ok		
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	prototype	0			9	4245504
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	prototype	1			11	4221440
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	prototype	2			10	4243200
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	shipped	0				
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	shipped	1				
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	pyramid	213.2	shipped	2				
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	prototype	0			4	16305664
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	prototype	1			3	16055040
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	prototype	2			3	16145152
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	shipped	0	433.2	ok		
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	shipped	1				
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	pyramid	326.2	shipped	2				
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	prototype	0			2	24975616
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	prototype	1			2	24440320
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	prototype	2			2	25271040
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	shipped	0				
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	shipped	1				
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	pyramid	295.9	shipped	2				
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	prototype	0			2	7572992
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	prototype	1			2	7518976
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	prototype	2			2	7487744
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	shipped	0				
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	shipped	1	1796.9	ok		
+f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	pyramid	260.9	shipped	2	1390.1	ok		
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	prototype	0			4	14896896
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	prototype	1			4	14712576
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	prototype	2			6	14644224
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	shipped	0	1457.1	ok		
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	shipped	1	1511.7	ok		
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	pyramid	5799.2	shipped	2	395.3	ok		

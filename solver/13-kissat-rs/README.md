@@ -10692,6 +10692,342 @@ cells are now asked of the formula itself), four loops of propagations
 with no look at the work limit (closed by one test that sweeps the limit),
 and five faults in sampling and in the report.
 
+## Labels as choices: a walk over numbers stored as sorted bits (2026-11-21; bead `SAT-playground-d96.10`)
+
+The pyramid cells with a model are where the solver loses most in that
+family. In the default run of 2026-11-16 all seven unsolved pyramid cells
+have a model, and the ten refuted cells are solved at both seeds. The real
+choices of such a cell are its labels: one number from 0 to 6 for each line
+of cubes, 81 of them for size 4, and every placement of a cube follows from
+three of them. The walk that solves the lockchart cells ("Free choices: the
+walk in the solver") does not read these cells. It knows a choice only as
+"exactly one of these variables is true", and a label is stored as sorted
+bits. This bead asked: teach the reading such numbers, walk over the labels,
+and see whether that finds models the solver does not. Tools only, no solver
+code.
+
+**Answer: not on the cells.** The reading now takes the labels as the
+choices, and the walk fills the bare puzzle of size 4 in seconds. On the ten
+cells with a model it finds none: 0 of 30 walks of 1,800 s, where the solver
+as shipped finds a model in 14 of 30 runs at the same seeds. Every walk ends
+two to twelve constraints short. The reason is one option, `ZR`, that nine of
+the ten cells carry: it fixes the 24 labels of the pyramid's outer ring. With
+the ring fixed and nothing else added, a search over the labels stops one or
+two cubes short for as long as it was run, in the general tool and in a
+search written for this puzzle alone.
+
+### What the reader had to learn
+
+Four things, each general: nothing in the tools knows the puzzle. All of it
+is behind `--order` in `tools/free_census.py` and `tools/free_walk.py`; the
+reading without it is as it was (the solver's own reading and walk are held
+to it by `tools/free_read_check.py` and `tools/free_walk_check.py`, and both
+still agree).
+
+1. **Order groups.** A number stored as sorted bits is a run of bits b0, b1,
+   ... with a clause "b(k+1) implies bk" for every step: bit k is on when the
+   number is above k. Its values are the prefixes, one more than it has bits,
+   and a move of the search sets another prefix. The run is looked for among
+   the variables that nothing could compute: no two-way definition, and not a
+   one-way helper (`Reading.find_order_groups`). Checked against
+   `tools/pyramid_read.py`, which reads labels by the puzzle's own layout
+   (`scratch/labels_check.py`): on 12 of the 20 pyramid cells every label it
+   reads is an order group with the same bits in the same order, 52 of 52
+   on eight of the nine ring cells with a model and 129 of 129 on the size-5
+   cell. Where no option adds numbers of its own, the group count is the
+   count of free labels: 57 with the ring fixed, 81 without, 131 on size 5
+   (an `LP` cell has up to 160 groups). On the eight cells with an `LP`,
+   `LPI` or `CB` option 1 to 6 labels are left out: the option limits such
+   a label to a few values with clauses among its own bits, which also read
+   as definitions of the bits, and a bit that something defines is not
+   taken as an input. One of them is on a cell with a model
+   (`bp4_LPI_FPBEQ_ZR`).
+2. **What reads a number, asked of propagation.** Z3 ties a test to a number
+   in one-way pieces: "x = 2" is a count over x's bits, and a placement is a
+   test on three labels spread over a dozen clauses. No clause shape says
+   "this variable is x = 2 and y = 3 and z = 5", so the role reading cannot
+   compute a placement from the labels. Propagation can say so, because from
+   the bits to the tests it misses nothing ("Numbers stored as sorted bits").
+   Each number is set to each of its values in turn, and what propagation
+   then fixes is noted (`order_links`):
+   - a variable every value sets the same way is a unit;
+   - one that is on exactly from some value up equals a bit;
+   - one that is on exactly on a stretch of values is a test on that number;
+   - one that single numbers only ever turn off, each outside a stretch, and
+     that propagation turns on when all of them sit in their stretches, is a
+     test on several numbers at once (a placement);
+   - one whose stretches contradict each other is never on (a unit).
+
+   Each finding is added to the formula as the clauses of a two-way
+   definition over the bits. They hold in every model, so the models are the
+   same, and every model the walk finds is checked against the original file
+   anyway. One trap: a number can turn a variable off through a constraint
+   and not through what the variable is. A placement goes off when another
+   label puts its cube somewhere else, by "each cube once". With that label
+   in the placement's definition the placement would be wrong wherever the
+   constraint is broken, and the clauses that say what it is would break in
+   its place. So only the numbers the test needs are kept (13,334 such
+   numbers dropped on `bp4_TCO_CSO_ZR`).
+3. **Clauses the numbers always satisfy.** The one-way pieces stay in the
+   formula, and no role claims them, yet no choice of labels can break them.
+   A clause whose variables the numbers alone fix depends on a few of them;
+   with up to 20,000 joint values of those, all are tried, and a clause true
+   in all of them is dropped from what the search looks at
+   (`cover_by_order`; 291,987 clauses on `bp4_TCO_CSO_ZR`).
+4. **Counts.** "Each cube sits at exactly one position" is, in the file, one
+   long clause over the cube's 62 to 381 placements plus an encoding of "at
+   most one": pairs and a tree of helpers. Those are an exactly-one group
+   over variables that the labels compute, so it is no choice, but it is one
+   constraint. The search keeps a count for it and does not look at the
+   clauses the count stands for: every clause over the group's members and
+   what is computed from them alone that holds in each of the patterns
+   "exactly this member is true" (`cover_by_count`; 162,271 clauses for the
+   84 cubes of `bp4_TCO_CSO_ZR`).
+
+The walker (`tools/free-walk`) got the same four: order groups (a value is
+how many members are on), tests that read a number's value directly, families
+of tests over the same numbers (the 343 placements of one position: a table
+gives the one that is on, so a move turns one off and one on and does not
+look at the others), and count constraints (a count that is off by k, or at
+none, costs k, or 1). A computed variable that no constraint reads is not
+kept up to date.
+
+### A worked example
+
+Three numbers x, y and z, each from 0 to 3, so three sorted bits each.
+Three positions: A shows the pair (x, y), B shows (y, z), C shows (x, z).
+The puzzle: each of the pairs (0,1), (1,3) and (0,3) must show at exactly
+one position. (The answer is x = 0, y = 1, z = 3.) The file has a tile
+variable for every position and pair, such as "A shows (0,1)", tied to the
+bits in one-way pieces, and for every pair one long clause over its three
+tiles and the clauses for "at most one".
+
+What the reader does:
+
+| step | what it finds |
+|---|---|
+| order groups | three runs of three bits: three choices of four values |
+| propagation | x set to 1, 2 or 3 turns "A shows (0,1)" off, and so does y at 0, 2 or 3; with x = 0 and y = 1 together it comes on. So the tile is the test "x = 0 and y = 1" |
+| always-true clauses | the tile's one-way pieces hold for all 16 values of (x, y): dropped |
+| counts | each pair's long clause and its "at most one" become one count over its three tiles |
+
+What is left for the search: 3 choices, 9 tests, 3 counts, no clause. The
+walk from x = y = z = 3:
+
+| state | A, B, C show | counts off | move tried | cost after |
+|---|---|---|---|---|
+| x=3 y=3 z=3 | (3,3) (3,3) (3,3) | all three pairs show nowhere: 3 | y to 1 | B shows (1,3): 2 |
+| | | | x to 0 | A and C both show (0,3): that pair twice, the others nowhere: 3 |
+| x=3 y=1 z=3 | (3,1) (1,3) (3,3) | 2 | x to 0 | A shows (0,1), C shows (0,3): 0, a model |
+
+In the real cell one label is a line of up to seven cubes, so one move
+changes up to seven positions at once, and there are 84 cubes to place once
+each. The cost is the same thing: a cube that sits nowhere costs 1, a cube
+that sits twice costs 1.
+
+### The reading on the cells
+
+`free_walk.py run --order`, the ten cells with a model
+(`log/label-walk-2026-11-21/run2/readings/`):
+
+| cell | labels read (bits x count) | placements found as tests | free variables left | constraint clauses left | cube counts | read s |
+|---|---|---|---|---|---|---|
+| `bp4_TCO_CSO_ZR` | 57 (6x57) | 21,479 | 18 | 551 | 84 | 296 |
+| `bp4_CSO_IXA_ZR` | 57 (6x57) | 21,152 | 18 | 908 | 84 | 314 |
+| `bp4_TCO_IXA_FPBLE_ZR` | 57 (6x57) | 21,283 | 249 | 4,439 | 84 | 261 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 90 (6x78 5x5 3x3 4x2 2x2) | 21,054 | 198 | 3,922 | 84 | 326 |
+| `bp4_IXA_FPBEQ_ZR` | 57 (6x57) | 21,398 | 314 | 5,049 | 84 | 273 |
+| `bp4_BC012_AM_FPBEQ_ZR` | 55 (6x52 5x2 2x1) | 18,189 | 391 | 5,852 | 84 | 201 |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 55 (6x52 5x2 2x1) | 18,492 | 532 | 7,474 | 84 | 201 |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 55 (6x48 5x6 2x1) | 18,291 | 514 | 7,530 | 84 | 211 |
+| `bp4_LPI_FPBEQ_ZR` | 64 (6x62 5x1 4x1) | 19,296 | 315 | 93,901 | not formed (931 small counts) | 213 |
+| `bp5_CSO` | 131 (8x131) | 120,325 | 36 | 626 | 165 | 5,799 |
+
+Before this, the reading of `bp4_TCO_CSO_ZR` had the 84 cube groups as its
+choices, 1,014 free variables and 330,830 constraint clauses; now it has 57
+labels, 18 free variables, 84 counts and 551 clauses (the `TCO` and `CSO`
+options). The cells without a face-count option read that cleanly. Where a
+cell has one (`FPBEQ`, `FPBLE`), the sums of that option stay as 249 to 532
+free variables: a summand is a function of several labels but not a plain
+"x = a and y = b and z = c", and the reader has no definition for that. On
+`bp4_LPI_FPBEQ_ZR` the one label that is not read (the bottom centre line)
+leaves the placements on its line unresolved (3,753 variables), so the cube
+counts are not formed and 93,901 clauses are left: that cell's reading is
+the poorest of the ten.
+
+### The walk
+
+**Speed.** The first walk over the labels did 140 steps a second on
+`bp4_TCO_CSO_ZR`: one trial move touched 23,500 counters, most of them of
+clauses that are always true. Each step of the reading above cut that.
+Dropping the always-true clauses: 474 steps a second, and 900 with the limit
+of joint values at 20,000. Definitions with only the numbers they need:
+2,700. Tests that read a value, and counts: 14,300 steps a second (767,000
+trial moves, 93 counters a trial), 100 times the first walk.
+
+**Settings.** One setting for every run, chosen on short runs at other
+seeds on two cells (`log/label-walk-2026-11-21/tuning/`): clause weights that
+are never reset or decayed (`--phase 0 --smooth 0`). On `bp4_TCO_CSO_ZR` the
+default alternation does as well; more noise, a tabu or fewer candidates a
+step do worse.
+
+**The cells** (2026-11-21, `workstation-Precision-7920-Tower`, one pinned
+core a run, 1,800 s, seeds 0, 1 and 2; walk `log/label-walk-2026-11-21/run2/`,
+solver `log/abtest-label-walk-solver-2026-11-21-19-53-42/ship`, the current
+build, sha256 `ed1ef6be63379e9e`, every model checked). Seconds to a model
+(— none), and for the walk the fewest constraints it had false:
+
+| cell | label walk (0/1/2) | fewest false (0/1/2) | steps, millions | shipped solver (0/1/2) |
+|---|---|---|---|---|
+| `bp4_TCO_CSO_ZR` | — / — / — | 2 / 2 / 2 | 25 | — / — / — |
+| `bp4_CSO_IXA_ZR` | — / — / — | 2 / 2 / 2 | 15 | 120 / 1593 / 1548 |
+| `bp4_TCO_IXA_FPBLE_ZR` | — / — / — | 2 / 2 / 2 | 7.5 | — / 1797 / 1390 |
+| `bp4_TCO_CSO_IXA_LP_ZR` | — / — / — | 4 / 3 / 3 | 16 | 433 / — / — |
+| `bp4_IXA_FPBEQ_ZR` | — / — / — | 4 / 6 / 4 | 7.0 | 575 / — / 107 |
+| `bp4_BC012_AM_FPBEQ_ZR` | — / — / — | 7 / 10 / 10 | 6.9 | — / — / — |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | — / — / — | 6 / 7 / 7 | 6.5 | 1650 / — / — |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | — / — / — | 10 / 12 / 10 | 6.0 | 968 / — / 990 |
+| `bp4_LPI_FPBEQ_ZR` | — / — / — | 9 / 11 / 10 | 4.2 | — / — / — |
+| `bp5_CSO` | — / — / — | 4 / 4 / 6 | 15 | 1457 / 1512 / 395 |
+| all | 0 of 30 | | | 14 of 30 |
+
+"2 false" is one cube that sits nowhere and one that sits twice. The walk
+gets there within seconds and stays there.
+
+### Where it works, and what stops it
+
+The bare puzzle of size 4, no option, as a formula of our own
+(`tools/pyramid_read.py bare 4`: labels as sorted bits, each placement a
+two-way AND of its bits, each cube once), and the same file with only the 24
+ring labels fixed to the values `ZR` gives them (`log/label-walk-2026-11-21/bare/`,
+one pinned core a run):
+
+| | label walk | shipped solver |
+|---|---|---|
+| bare | 16 of 16 seeds, 1.9 to 49 s, half within 9 s (120 s limit) | 3 of 3 seeds, 5.3 to 7.8 s |
+| ring fixed | 0 of 8 seeds in 900 s (22 million steps each; one cube nowhere and one twice) | 1 of 3 seeds in 1,800 s (105 s) |
+
+The walk's time is the search alone; reading the bare file takes 131 s
+first, in Python. So on the bare puzzle a walk over the labels is about as
+good as the solver, and the fixed ring is what stops it. The ring makes the
+puzzle hard for the solver too: from 5 to 8 s to one model in three runs of
+1,800 s. The options that the cells add on top of the ring are what the
+solver then gets through with (14 of 30). Three more checks:
+
+- *A search written for this puzzle alone*
+  (`log/label-walk-2026-11-21/scratch/puzzle/`: labels as plain numbers, a
+  count per cube, weights, 400,000 steps a second). Bare: it fills the
+  pyramid in 14 of 16 runs within 30 s. Ring fixed: 0 of 8 runs in 900 s (314
+  to 344 million steps each), ending one or two cubes short; 160 restarts of
+  4 s each: none; with moves that swap two labels as well: 0 of 4 in 150 s.
+  On the bare puzzle the general walk needs about as long as this one, so
+  the stop is not the general tool's.
+- *A near-miss is not near a model.* From the best state of three walks on
+  `bp4_TCO_CSO_ZR` (three or four counts off), 20 or 30 of the 57 labels were
+  set free, the labels at the doubled cubes among them, the rest kept as
+  unit clauses, and the solver asked: no model, 48 times of 48. With 40
+  labels free and 17 kept: no model, 8 times of 8 (19 to 271 s each;
+  `scratch/lns_probe.py`). So handing the walk's state to the solver, as
+  starting values or as a part to repair, would not help either.
+- *The models are far apart.* Six models of four ring cells from earlier
+  solver runs differ from each other in 33 to 45 of the 57 free labels, two
+  models of one cell in 37 and in 39 (`scratch/model_labels.py`).
+
+A likely reason, in the terms of the example (a reading, not a
+measurement): a move changes a whole line. On the bottom layer a line has
+seven cubes, and with the ring fixed, two to seven of them are ring cubes
+whose third label cannot move. The fourteen bottom labels and the fixed ring
+already decide 24 of the 84 cubes, so a change to one of those labels moves
+several of these cubes at once, and nothing around them can give way.
+
+### Which other cells hold such numbers
+
+`free_census.py chains` reads the order groups of a cell and nothing else
+(`benchmarks/rl/order_groups_2025.tsv`; the first 5M clauses of the eight
+biggest cells, as in the other censuses; 11 cells are refuted by their
+units). 46 of the 400 cells have order groups:
+
+| family | cells with order groups | groups a cell | bits a group | unsolved cell-seeds, default run of 2026-11-16 |
+|---|---|---|---|---|
+| bp (pyramid) | 20 of 20 | 57 to 160 | 6, 8 on size 5 (and 72 groups of 4) | 12 |
+| gp (graceful production) | 7 of 7 | 31,724 to 98,996 | 5 and 6 | 0 |
+| sudoku | 5 of 5 | 2,447 | 8 (and 17 of 6) | 4 |
+| hwmc-step-transition | 3 of 8 | 1 | 20, 21, 33 | 0 |
+| hwmcc-iter | 2 of 4 | 66 and 994 | 3 to 9 | 0 |
+| dltm | 2 of 2 | 60 and 80 | 3 | 0 |
+| seven more families, one cell each | 7 | 1 to 472 | 3 to 113 | 2 (`itc2021`, one run of 3 bits) |
+
+Outside the pyramid only sudoku has unsolved cells with such numbers (two
+cells, both seeds). Its runs sit on the file's first variables, eight bits
+each. What the runs are in the graceful-production cells (tens of thousands
+of short ones) was not read; the number pass counts 123 numbers there and in
+five other families together. The full reading was tried on one unsolved
+sudoku cell (`sudoku-N30-16`, 1,778 s to read): 2,447 order groups, but
+60,266 variables stay free and 332,773 clauses stay constraints, and two
+walks of 300 s end 283 and 288 clauses short. That is not a cell where a
+few choices fix everything.
+
+### Limits
+
+- The reading is slow: 200 to 330 s for a size-4 cell and 97 minutes for
+  the size-5 cell, nearly all of it the propagation step, in Python, one
+  propagation for every placement. The solver's number pass does the same
+  kind of asking in seconds.
+- An order group is read only where the bits are inputs. A number whose
+  tests "the value is a" have variables of their own with two-way
+  definitions is not read: each bit then also reads as defined, by a test
+  and its neighbour bit, and a bit that something defines is not taken as
+  an input. On a toy of that kind 0 of 8 numbers are read (the reading
+  stays correct, with more free variables). The same holds for the labels
+  that `LP`, `LPI` and `CB` limit, above. Numbers that are compared bit by
+  bit are not read as runs either. The solver's number pass, which asks
+  propagation what is a bit, reads numbers on four cells where this reader
+  finds no order group, and none on 20 of the 46 where it finds some.
+- A function of several numbers is found only when it is a test "each of
+  these numbers lies in its stretch". The face-count sums are not, and stay
+  free variables.
+- One setting of the walk for every cell, chosen on two cells.
+- The size-5 cell has no fixed ring. The walk ends four to six constraints
+  short there, and the puzzle's own search does not fill the bare size-5
+  pyramid in 60 s either (8 runs, 4 to 7 cubes short). Size 5 is hard for a
+  search over the labels by itself.
+
+### What it means
+
+- The label walk gains no pyramid cell, and no decision is asked of the
+  owner: there is nothing to build into the solver. The cells with a model
+  stay with the solver's luck (14 of 30 runs at these seeds).
+- The obstacle is an option of the cells, not the reading. The author's
+  options add partial constructions and orderings to help a solver that
+  propagates; they take away the room a local search needs. That matches
+  the oddball finding ("Free choices: the prototype search"): a walk over
+  the real choices pays where the choices are free to move (lockchart, the
+  bare pyramid), not where constraints tie many of them at once.
+- The reading by itself is the lasting part. It turns Z3's encoding of these
+  cells into its puzzle with no knowledge of the puzzle: 57 labels, 21,000
+  tests, 84 counts and a few hundred clauses in place of 48,000 variables
+  and 750,000 clauses. A search that needs that compact model, of another
+  kind than a walk, can start from it.
+
+Tools: `tools/free_census.py` (`--order` on `one` and `census`; `chains`;
+`selftest`, 47 checks), `tools/free_walk.py` (`--order` on `export`, `walk`
+and `run`; `selftest`, 67 checks), `tools/free-walk` (order groups, tests,
+families, counts, `--dump-best`), `tools/pyramid_read.py bare`; tables
+`benchmarks/rl/label_walk_2025.tsv` and `benchmarks/rl/order_groups_2025.tsv`;
+scripts, readings and outputs in `log/label-walk-2026-11-21/`. Checked on
+toys first: a small puzzle of the same shape (8 numbers of 4 values, 24
+positions, tiles tied to the bits one way as Z3 does) at 40 seeds and sizes
+through the whole path: no clause that the reading claims comes out false,
+the planted numbers give a model, and the walk, with its state recomputed
+after every step, finds a model that `verify_sat.py` accepts
+(`scratch/toy_fuzz.py`). Codex reviewed the change in four rounds; the
+last two were clean. The first two found: a test over more than 255 numbers and
+a stretch past the value 255 that the walker could not take (such a test is
+now written as a plain OR, and the fields are wide), two faults in the
+census row (the share of false constraints did not count the counts, and
+the number of inputs was lost), and tables for families of tests whose size
+went with the combinations of values, not with the tests (now bounded).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

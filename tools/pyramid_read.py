@@ -31,6 +31,12 @@ Commands:
                          placements that are not unit-false (implied, not RUP)
   rupcheck ORIG VARIANT [--sample 3000]
                          unit-propagation check of the added clauses
+  bare N OUT.cnf         the bare puzzle of size N as a formula of our own, no
+                         option (bead SAT-playground-d96.10): labels as sorted
+                         bits, each placement a two-way AND of its bit literals,
+                         each cube exactly once (a long clause and a ladder).  Not
+                         a competition cell; it shows what a search over the
+                         labels does where no option stands in the way
   selftest               toys: placement order, the OR and RUP readers
 
 Measured with it (solver README, 'Reading the bp, oisc and smt2 cells'): the links
@@ -369,6 +375,59 @@ def cmd_rupcheck(a):
         print(f"  {k}: {ok} of {tot} RUP")
 
 
+def bare_puzzle(N):
+    """(variables, clauses, labels) of the bare puzzle of size N.  labels maps
+    ("X", x, h), ("Y", y, h) and ("Z", x, y) to the label's bit variables, lowest
+    first: bit k is on when the label is above k."""
+    L = 2 * N - 1
+    th = [min(x + 1, L - x) for x in range(L)]
+    nv = 0
+    labels = {}
+    clauses = []
+    pos = [(x, y, h) for x in range(L) for y in range(L) for h in range(min(th[x], th[y]))]
+    for (x, y, h) in pos:
+        for key in (("X", x, h), ("Y", y, h), ("Z", x, y)):
+            if key not in labels:
+                labels[key] = list(range(nv + 1, nv + L))
+                nv += L - 1
+    for b in labels.values():
+        for k in range(L - 2):
+            clauses.append((-b[k + 1], b[k]))
+
+    def says(b, a):
+        return ([b[a - 1]] if a > 0 else []) + ([-b[a]] if a < L - 1 else [])
+
+    cubes = {c: [] for c in combinations_with_replacement(range(L), 3)}
+    assert len(cubes) == len(pos)
+    for (x, y, h) in pos:
+        bx, by, bz = labels[("X", x, h)], labels[("Y", y, h)], labels[("Z", x, y)]
+        for r0, r1, r2 in product(range(L), repeat=3):
+            nv += 1
+            need = says(bx, r0) + says(by, r1) + says(bz, r2)
+            clauses += [(-nv, z) for z in need]
+            clauses.append((nv,) + tuple(-z for z in need))
+            cubes[tuple(sorted((r0, r1, r2)))].append(nv)
+    for ps in cubes.values():
+        clauses.append(tuple(ps))
+        for a in range(len(ps) - 1):          # the ladder: s is on from the first placed copy on
+            s = nv + 1 + a
+            clauses.append((-ps[a], s))
+            if a:
+                clauses.append((-(s - 1), s))
+            clauses.append((-s, -ps[a + 1]))
+        nv += len(ps) - 1
+    return nv, clauses, labels
+
+
+def cmd_bare(a):
+    nv, clauses, labels = bare_puzzle(a.N)
+    with open(a.out, "w") as f:
+        f.write(f"p cnf {nv} {len(clauses)}\n")
+        for c in clauses:
+            f.write(" ".join(map(str, c)) + " 0\n")
+    print(f"N={a.N}: {len(labels)} labels, {nv} variables, {len(clauses)} clauses -> {a.out}")
+
+
 def selftest():
     """Toys: the placement count and order, the OR reader, the chain reader and the
     RUP check on a hand-built order-encoded label with a one-way value test."""
@@ -391,6 +450,12 @@ def selftest():
     loose = UnitProp(4, gates)                                            # no chain
     assert not loose.rup((-4, 1)) and not loose.rup((-4, -2))
     assert UnitProp(2, [(1,), (-1,)]).rup((2,))                           # root conflict
+    # the bare puzzle of size 1: one position, one cube, three labels of one value (no bit)
+    assert bare_puzzle(1) == (1, [(1,), (1,)], {("X", 0, 0): [], ("Y", 0, 0): [], ("Z", 0, 0): []}), bare_puzzle(1)
+    nv2, cl2, lab2 = bare_puzzle(2)                                       # size 2: 17 labels of 3 values, 10 cubes
+    assert len(lab2) == 17 and all(len(b) == 2 for b in lab2.values()) and nv2 == 34 + 270 + 260, (len(lab2), nv2)
+    up2 = UnitProp(nv2, cl2)
+    assert not up2.root_conflict and up2.rup((-35, -lab2[("X", 0, 0)][0]))  # placement 35 is cube (0,0,0) at the first position
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".cnf", delete=False) as tf:
         tf.write("c x\np cnf 3 3\n1 -2 0\n0\n2 3\n 0\n")
@@ -418,11 +483,14 @@ def main(argv=None):
     c.add_argument("variant")
     c.add_argument("--sample", type=int, default=3000)
     c.add_argument("--seed", type=int, default=1)
+    b = sub.add_parser("bare")
+    b.add_argument("N", type=int)
+    b.add_argument("out")
     a = ap.parse_args(argv)
     if a.cmd == "selftest":
         selftest()
         return
-    {"read": cmd_read, "variant": cmd_variant, "rupcheck": cmd_rupcheck}[a.cmd](a)
+    {"read": cmd_read, "variant": cmd_variant, "rupcheck": cmd_rupcheck, "bare": cmd_bare}[a.cmd](a)
 
 
 if __name__ == "__main__":

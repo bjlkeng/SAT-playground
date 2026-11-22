@@ -7,18 +7,20 @@ The search is tools/free-walk (Rust, standalone, no solver code; `cargo build
 tools/free_census.py and checks every model it finds against the original
 formula with tools/verify_sat.py, the gate's checker.
 
-  export CNF OUT.fwr        write the reading for the walker (format below)
-  walk CNF [--seed N] [--seconds S] [--keep FILE] [--walker-args '...']
+  export CNF OUT.fwr [--order]
+                            write the reading for the walker (format below)
+  walk CNF [--seed N] [--seconds S] [--keep FILE] [--walker-args '...'] [--order]
                             export to a scratch file, walk, check the model
   run --out DIR [--cells REGEX ...] [--seeds 0,1,2] [--seconds 1800]
-      [--jobs 32] [--export-jobs 8] [--mem-mb 16000] [--walker-args '...']
+      [--jobs 32] [--export-jobs 8] [--mem-mb 16000] [--walker-args '...'] [--order]
                             the prototype arm on 2025 cells: every reading once
                             (timed), then one walk per cell and seed on its own
                             core, then every model checked; DIR/results.tsv
   report --walk RESULTS.tsv --arm NAME=RESULTS.tsv ... [--readings DIR] [--tsv OUT]
                             the per-cell table over the arms (markdown; the
                             cells all arms ran), and with --tsv one row per
-                            cell, arm and seed
+                            cell, arm and seed (for the walk also the fewest
+                            false constraints it reached and its steps)
   selftest                  toys: the walker's computed values against the
                             census's own evaluation, and a model found and
                             checked on every satisfiable toy
@@ -26,17 +28,30 @@ formula with tools/verify_sat.py, the gate's checker.
                             (src/freewalk.rs tests): per toy `toy NAME`, `sat 0|1`,
                             the DIMACS text and `end`
 
+With --order the reading takes numbers stored as sorted bits as choices too
+(free_census.py --order, bead SAT-playground-d96.10): order groups, tests
+that read a number's value, and count constraints.  The solver's own walk
+does not have them; the readings without --order are written as before.
+
 The reading file is FWR1 and then 32-bit little-endian integers: nv; the
 units (count, then variable and value pairs); the groups (count, then per
-group: none_ok, size, member literals); the free variables (count,
+group: its kind (0 exactly one member true, 1 at most one, 2 an order group:
+the first v members true for a value v from 0 to the size), size, member
+literals); the free variables (count,
 variables); the computed variables in computing order (count, then per
 variable a kind and its data: 4 an OR: output literal, count, input literals,
-the output literal true when an input is; 5 a gate: variable, support size,
+the output literal true when an input is; 7 a test on order groups: output
+literal, count, then per group its index and the lowest and highest value of
+its stretch, the output literal true when every one of those groups has a
+value in its stretch (written for a definition whose inputs are all bits of
+order groups); 5 a gate: variable, support size,
 support variables, truth table indexed by the support values with the first
 support the lowest bit; 6 a helper: helper literal, count of its clauses,
 then per clause the count and its other literals, the helper literal true
 when one of its clauses has every other literal false); the constraint
-clauses (count, then per clause the count and its literals).
+clauses (count, then per clause the count and its literals).  A reading with
+count constraints has the magic FWR2 and, after the clauses, their number and
+per constraint the count and its literals: exactly one of them is true.
 
 The 2026 suite is not read (plan section 8: it is the holdout).
 """
@@ -69,6 +84,7 @@ SUITE = ROOT / "benchmarks" / "sat-comp-2025"
 WALKER = TOOLS / "free-walk" / "target" / "release" / "free-walk"
 VERIFY_SAT = TOOLS / "verify_sat.py"
 MAGIC = b"FWR1"
+MAGIC2 = b"FWR2"           # a reading with count constraints after the constraint clauses
 # the cells of the bead: lockchart groups 1 and 2, oddball tto, and the two mp1
 # circuits the census named (timetable's counters read as one-way helpers, not
 # definitions, so by the bead's own condition it is not a target)
@@ -92,8 +108,8 @@ def reading_array(fixed, rd):
         out.append(v)
         out.append(1 if fixed[v] else 0)
     out.append(len(rd.groups))
-    for mem, none_ok in zip(rd.groups, rd.none_ok):
-        out.append(1 if none_ok else 0)
+    for mem, none_ok, ordered in zip(rd.groups, rd.none_ok, rd.ordered):
+        out.append(2 if ordered else 1 if none_ok else 0)
         out.append(len(mem))
         out.extend(mem)
     free = [v for v in rd.order if rd.role[v] == fc.FREE]
@@ -101,12 +117,34 @@ def reading_array(fixed, rd):
     out.extend(free)
     nodes = [v for v in rd.order if rd.role[v] in (fc.DEF, fc.GATE, fc.HELPER)]
     out.append(len(nodes))
+    # where each member of an order group sits: variable -> (group, index, the member literal is positive)
+    member = {abs(x): (g, j, x > 0) for g, mem in enumerate(rd.groups) if rd.ordered[g] for j, x in enumerate(mem)}
     for v in nodes:
         i = rd.acc[v]
         r = rd.role[v]
         if r == fc.DEF:
             c, x = rd.c_a[i], rd.c_b[i]
             ins = [y for y in lits[starts[c]:starts[c + 1]] if y != x]
+            if member and ins and all(abs(y) in member for y in ins):
+                # x is the AND of the opposites of the inputs, all bits of order groups: a
+                # test "every one of these numbers lies in its stretch".  Member j true
+                # says the value is above j, member j false that it is j or less.
+                stretch = {}
+                for y in ins:
+                    g, j, positive = member[abs(y)]
+                    lo, hi = stretch.get(g, (0, len(rd.groups[g])))
+                    if (-y > 0) == positive:
+                        lo = max(lo, j + 1)
+                    else:
+                        hi = min(hi, j)
+                    stretch[g] = (lo, hi)
+                if len(stretch) <= 255:           # the walker counts a test's groups in a byte; a wider one stays an OR
+                    out.append(7)
+                    out.append(x)
+                    out.append(len(stretch))
+                    for g in sorted(stretch):
+                        out.extend((g, stretch[g][0], stretch[g][1]))
+                    continue
             out.append(4)
             out.append(-x)                    # -x is the OR of the clause's other literals
             out.append(len(ins))
@@ -133,19 +171,27 @@ def reading_array(fixed, rd):
     for c in cons:
         out.append(starts[c + 1] - starts[c])
         out.extend(lits[starts[c]:starts[c + 1]])
+    if rd.counts:
+        # the count constraints (magic FWR2): exactly one of these literals is true
+        out.append(len(rd.counts))
+        for mem in rd.counts:
+            out.append(len(mem))
+            out.extend(mem)
     return out
 
 
-def write_reading(path, data):
+def write_reading(path, data, counts=False):
+    """With counts the file holds count constraints after the clauses (magic FWR2)."""
     if sys.byteorder != "little":
         data.byteswap()
     with open(path, "wb") as f:
-        f.write(MAGIC)
+        f.write(MAGIC2 if counts else MAGIC)
         data.tofile(f)
 
 
-def export(cnf_path, out_path, deadline=None):
-    """Read the cell, write its reading; returns the timings and sizes."""
+def export(cnf_path, out_path, deadline=None, order=False):
+    """Read the cell, write its reading; returns the timings and sizes.  With
+    order, numbers stored as sorted bits are choices too (free_census.py --order)."""
     if "sat-comp-2026" in str(Path(cnf_path).resolve()):
         raise SystemExit("the 2026 suite is the holdout and is not read")
     t0 = time.time()
@@ -154,25 +200,28 @@ def export(cnf_path, out_path, deadline=None):
         raise SystemExit(f"{cnf_path}: more clauses than the census reads whole; the walk needs the whole formula")
     nclauses = cnf.m
     t1 = time.time()
-    fixed, rd, _nsat = fc.read_roles(cnf, deadline)
+    fixed, rd, _nsat = fc.read_roles(cnf, deadline, order)
     t2 = time.time()
     info = {"cnf": str(cnf_path), "clauses": nclauses, "parse_s": round(t1 - t0, 1), "roles_s": round(t2 - t1, 1)}
     if rd is None:
         info.update(refuted=True, read_s=round(time.time() - t0, 1))
         return info
     data = reading_array(fixed, rd)
-    write_reading(out_path, data)
+    write_reading(out_path, data, bool(rd.counts))
     t3 = time.time()
     s = rd.summary()
     info.update(refuted=False, write_s=round(t3 - t2, 1), read_s=round(t3 - t0, 1), fixed=len(fixed),
                 groups=s["groups"], amo_groups=s["amo_groups"], free=s["free"], defs=s["defs"], gates=s["gates"],
                 helpers=s["helpers"], constraints=s["constraints"], bits=s["bits"], stages=rd.times)
+    if order:
+        info.update(order_groups=s["order_groups"], order_sizes=s["order_sizes"], early=s["early"],
+                    order_links=s["order_links"], counts=s["counts"], cov_order=s["cov_order"], cov_count=s["cov_count"])
     return info
 
 
-def _export_job(cnf_path, out_path):
+def _export_job(cnf_path, out_path, order=False):
     try:
-        return export(cnf_path, out_path)
+        return export(cnf_path, out_path, order=order)
     except BaseException as e:            # noqa: BLE001 (a worker's failure is a row, not a crash)
         return {"cnf": cnf_path, "error": f"{type(e).__name__}: {e}"}
 
@@ -225,7 +274,7 @@ def verify(cnf_plain, out_file, timeout=3600):
 
 
 def cmd_export(args):
-    info = export(args.cnf, args.out)
+    info = export(args.cnf, args.out, order=args.order)
     print(json.dumps(info))
     return 0
 
@@ -234,7 +283,7 @@ def cmd_walk(args):
     with tempfile.TemporaryDirectory() as tmp:
         reading = args.keep or os.path.join(tmp, "reading.fwr")
         if not (args.keep and os.path.exists(args.keep)):
-            info = export(args.cnf, reading)
+            info = export(args.cnf, reading, order=args.order)
             print("c reading:", json.dumps(info), flush=True)
             if info.get("refuted"):
                 print("s UNSATISFIABLE (unit propagation refutes it)")
@@ -290,6 +339,8 @@ def cmd_run(args):
     # the settings every walk in the folder shares: a folder is resumed (more seeds or cells,
     # or the walks a stop cut short) only with the same ones
     settings = {"seconds": args.seconds, "walker_args": shlex.split(args.walker_args), "mem_mb": args.mem_mb}
+    if args.order:
+        settings["order"] = True
     sfile = out / "settings.json"
     if sfile.exists():
         old = json.loads(sfile.read_text())
@@ -315,7 +366,8 @@ def cmd_run(args):
     if todo:
         print(f"[run] reading {len(todo)} cells, {args.export_jobs} at a time", flush=True)
         with ProcessPoolExecutor(args.export_jobs, initializer=_limit_memory, initargs=(args.mem_mb,)) as ex:
-            futs = {ex.submit(_export_job, str(SUITE / f"{s}.cnf.xz"), str(rdir / f"{s}.fwr")): s for s in todo}
+            futs = {ex.submit(_export_job, str(SUITE / f"{s}.cnf.xz"), str(rdir / f"{s}.fwr"), args.order): s
+                    for s in todo}
             for f in as_completed(futs):
                 s = futs[f]
                 info = f.result()
@@ -419,7 +471,7 @@ def cmd_run(args):
 def _family(stem):
     s = stem[33:] if re.match(r"[0-9a-f]{32}-", stem) else stem
     for pat, name in ((r"lockchart-group1", "lockchart group 1"), (r"lockchart-group2", "lockchart group 2"),
-                      (r"oddball_.*_tto", "oddball tto"), (r"mp1-", "mp1")):
+                      (r"oddball_.*_tto", "oddball tto"), (r"mp1-", "mp1"), (r"^bp\d_", "pyramid")):
         if re.search(pat, s):
             return name
     return "other"
@@ -497,9 +549,14 @@ def cmd_report(args):
             parts.append(f"{runs}/{tot}, {ever}")
         print(f"| {f} | {len(fs)} | " + " | ".join(parts) + " |")
     if args.tsv:
+        # for the walk also where it got to: the fewest false constraints and its steps
+        got = {}
+        with open(args.walk) as fh:
+            for r in csv.DictReader(fh, delimiter="\t"):
+                got[(r["stem"], int(r["seed"]))] = (r.get("best", ""), r.get("steps", ""))
         with open(args.tsv, "w", newline="") as fh:
             w = csv.writer(fh, delimiter="\t", lineterminator="\n")
-            w.writerow(["stem", "family", "read_s", "arm", "seed", "model_s", "check"])
+            w.writerow(["stem", "family", "read_s", "arm", "seed", "model_s", "check", "walk_best", "walk_steps"])
             for s in stems:
                 for n, a in arms:
                     for sd in seeds:
@@ -507,7 +564,7 @@ def cmd_report(args):
                             continue
                         v = a[(s, sd)]
                         w.writerow([s, _family(s), reads.get(s, ""), n, sd, "" if v is None else f"{v[0]:.1f}",
-                                    "" if v is None else v[1]])
+                                    "" if v is None else v[1], *(got.get((s, sd), ("", "")) if n == "prototype" else ("", ""))])
     shown = set(stems)
     marked = sum(1 for _n, a in arms for k, v in a.items() if k[0] in shown and v is not None and v[1] != "ok")
     if marked:
@@ -519,7 +576,7 @@ def cmd_report(args):
 # self-test
 # ---------------------------------------------------------------------------
 
-def _walk_toy(nv, cl, tmp, name, extra):
+def _walk_toy(nv, cl, tmp, name, extra, order=False):
     """Export the toy, walk it; (result, stats, assignment {var: bool} or None, rd, fixed)."""
     path = os.path.join(tmp, name + ".cnf")
     with open(path, "w") as fh:
@@ -527,9 +584,9 @@ def _walk_toy(nv, cl, tmp, name, extra):
         for c in cl:
             fh.write(" ".join(map(str, c)) + " 0\n")
     cnf, _t = fc.read_cnf(path)
-    fixed, rd, _ = fc.read_roles(cnf)
+    fixed, rd, _ = fc.read_roles(cnf, order=order)
     reading = os.path.join(tmp, name + ".fwr")
-    write_reading(reading, reading_array(fixed, rd))
+    write_reading(reading, reading_array(fixed, rd), bool(rd.counts))
     p = subprocess.run([str(WALKER), reading, *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     res, st = parse_walk(p.stdout)
     assign = None
@@ -550,8 +607,13 @@ def _agrees(rd, fixed, assign):
     """Does the walker's assignment equal the census's evaluation from the
     same choices (the true member per group, the free values)?"""
     idx = []
-    for mem, none_ok in zip(rd.groups, rd.none_ok):
+    for mem, none_ok, ordered in zip(rd.groups, rd.none_ok, rd.ordered):
         t = [j for j, x in enumerate(mem) if assign[abs(x)] == (x > 0)]
+        if ordered:
+            if t != list(range(len(t))):
+                return False, "an order group whose true members are not its first ones"
+            idx.append(len(t))
+            continue
         if len(t) == 0 and none_ok:
             t = [len(mem)]
         if len(t) != 1:
@@ -657,6 +719,37 @@ def cmd_selftest(_args):
                     ver = verify(path, os.path.join(tmp, name + ".out"), timeout=120)
                     ok &= fc._check(f"{name}: verify_sat.py accepts it", ver == "ok", ver)
                     ok &= fc._check(f"{name}: the model agrees with the census's evaluation", _agrees(rd, fixed, assign)[0])
+        # numbers stored as sorted bits (--order): order groups, tests that read a number's
+        # value, families of tests and count constraints, each checked against a
+        # recomputation every step
+        for name, direct, seed in (("order", False, 21), ("order-direct", True, 22)):
+            nv, cl = fc.toy_order(direct=direct, seed=seed)[:2]
+            agree, why = True, ""
+            for sd in range(3):
+                res, st, assign, rd, fixed, _path, p = _walk_toy(nv, cl, tmp, name, ["--seed", str(sd), "--steps", "0", "--dump"],
+                                                                 order=True)
+                if assign is None or rd is None:
+                    agree, why = False, f"no assignment (exit {p.returncode}: {p.stderr.strip()[:200]})"
+                    break
+                a, why = _agrees(rd, fixed, assign)
+                if not a:
+                    agree = False
+                    break
+            ok &= fc._check(f"{name}: the walker computes every variable as the census does", agree, why)
+            ok &= fc._check(f"{name}: the reading has order groups and count constraints",
+                            rd is not None and sum(rd.ordered) == 8 and len(rd.counts) >= 22,
+                            "" if rd is None else f"{sum(rd.ordered)} order groups, {len(rd.counts)} counts")
+            for wargs in ([], ["--phase", "0", "--smooth", "0"], ["--weights", "none"]):
+                res, st, assign, rd, fixed, path, p = _walk_toy(nv, cl, tmp, name, ["--seed", "1", "--seconds", "20", "--check", "1",
+                                                                                     *wargs], order=True)
+                found = res == "SATISFIABLE" and p.returncode == 10
+                ok &= fc._check(f"{name} {' '.join(wargs)}: a model found (state checked every step)", found,
+                                f"{res} rc {p.returncode} {p.stderr.strip()[-300:]}")
+                if found:
+                    ok &= fc._check(f"{name} {' '.join(wargs)}: verify_sat.py accepts it",
+                                    verify(path, os.path.join(tmp, name + ".out"), timeout=120) == "ok")
+                    ok &= fc._check(f"{name} {' '.join(wargs)}: the model agrees with the census's evaluation",
+                                    _agrees(rd, fixed, assign)[0])
         # clause weights: the weighted cost checked against a recomputation every step
         nv, cl = fc.toy_lockchart(n_keys=24, n_locks=20, pins=6, depths=4, seed=11)[:2]
         for wargs in (["--weights", "clause", "--smooth", "5"], ["--weights", "all", "--smooth", "3"]):
@@ -712,12 +805,14 @@ def main(argv):
     p = sub.add_parser("export")
     p.add_argument("cnf")
     p.add_argument("out")
+    p.add_argument("--order", action="store_true", help="numbers stored as sorted bits are choices too")
     p = sub.add_parser("walk")
     p.add_argument("cnf")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--seconds", type=float, default=60)
     p.add_argument("--keep", default=None, help="the reading file: written if missing, reused if present")
     p.add_argument("--walker-args", default="", help="more walker options, one string")
+    p.add_argument("--order", action="store_true", help="numbers stored as sorted bits are choices too")
     p = sub.add_parser("run")
     p.add_argument("--out", required=True)
     p.add_argument("--cells", nargs="*", default=None, help="regexes over the 2025 stems (default: the bead's cells)")
@@ -727,6 +822,7 @@ def main(argv):
     p.add_argument("--export-jobs", type=int, default=8)
     p.add_argument("--mem-mb", type=int, default=16000)
     p.add_argument("--walker-args", default="")
+    p.add_argument("--order", action="store_true", help="numbers stored as sorted bits are choices too")
     p = sub.add_parser("report")
     p.add_argument("--walk", required=True)
     p.add_argument("--arm", action="append")

@@ -115,7 +115,32 @@ work is **solver 13** and the RL scheduler on top of it.
   only the 12 lockchart cells) and 7.2G ticks: at fresh seeds 2 and 3 it solves 681 v
   673, wall PAR-2 0.957x, the whole gain lockchart (+9 −0); on the cells the test turns
   down, the search is off's, step for step. On by default since 2026-11-12, the
-  owner's call (the stock path adds `--freewalk=0`).
+  owner's call (the stock path adds `--freewalk=0`). G.14, labels as
+  choices (bead `d96.10`, 2026-11-21; solver README, "Labels as choices"):
+  the free-choice tools read numbers stored as sorted bits as choices too
+  (`tools/free_census.py --order`, `tools/free_walk.py --order`; nothing in
+  them knows the puzzle). Four steps: order groups (a run of bits, its
+  values the prefixes); what reads a number, asked of propagation (a
+  placement comes out as the test "x = a and y = b and z = c"); clauses the
+  numbers always satisfy, dropped; and one count for an exactly-one group
+  of computed variables ("each cube at one position"). On `bp4_TCO_CSO_ZR`
+  that leaves 57 labels, 84 counts and 551 clauses of 48,000 variables and
+  750,000 clauses, and the walk does 14,300 steps a second. It fills the
+  bare size-4 puzzle (`tools/pyramid_read.py bare 4`) on 16 of 16 seeds in
+  2 to 49 s. **It finds no model on the ten pyramid cells that have one**:
+  0 of 30 walks of 1,800 s, the solver 14 of 30 at the same seeds
+  (`benchmarks/rl/label_walk_2025.tsv`). What stops it is the cells' `ZR`
+  option, which fixes the outer ring of labels: with only the ring fixed, 0
+  of 8 walks in 900 s, a search written for the puzzle alone does no better
+  (0 of 8, 300 million steps each), and the solver itself drops from 5 to 8
+  s to one model in three runs. A near-miss of the walk is not near a
+  model (56 solver calls with 17 to 37 of its 57 labels kept: all
+  refuted). Nothing to build, no decision asked. **Before a walk over a
+  cell's choices is tried again, check whether the cell fixes or orders a
+  part of them**: partial constructions help a solver that propagates and
+  take away the room a local search needs (oddball said the same). Order
+  groups are on 46 of the 400 cells (`benchmarks/rl/order_groups_2025.tsv`):
+  pyramid 20, graceful production 7, sudoku 5, 14 more.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode
