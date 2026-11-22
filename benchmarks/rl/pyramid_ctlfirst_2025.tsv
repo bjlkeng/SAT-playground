@@ -1,0 +1,81 @@
+cell	arm	seed	status	work	base_status	base_work	control
+bp4_BC012_AM_FPBEQ_ZR	halving	2	UNKNOWN	60000000897	UNKNOWN	60000002445	control ctlfirst=1 asked=324 vars=324 decisions=17127232
+bp4_BC012_AM_FPBEQ_ZR	halving	3	UNKNOWN	60000005170	UNKNOWN	60000000843	control ctlfirst=1 asked=324 vars=324 decisions=14390772
+bp4_BC012_AM_FPBEQ_ZR	halving	4	UNKNOWN	60000001879	UNKNOWN	60000024116	control ctlfirst=1 asked=324 vars=324 decisions=14202333
+bp4_BC012_AM_FPBEQ_ZR	halving	5	UNKNOWN	60000008571	UNKNOWN	60000002110	control ctlfirst=1 asked=324 vars=324 decisions=11756741
+bp4_BC012_AM_FPBEQ_ZR	split	2	UNKNOWN	60000007252	UNKNOWN	60000002445	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=176913504 lemmas=0 pre=348730279 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5658617 s1loads=1
+bp4_BC012_AM_FPBEQ_ZR	split	3	UNKNOWN	60000001570	UNKNOWN	60000000843	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=176908723 lemmas=0 pre=348730279 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5658617 s1loads=1
+bp4_BC012_AM_FPBEQ_ZR	triples	2	UNKNOWN	60000002355	UNKNOWN	60000002445	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_BC012_AM_FPBEQ_ZR	triples	3	UNKNOWN	60000009621	UNKNOWN	60000000843	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	halving	2	UNKNOWN	60000010349	SATISFIABLE	34214056933	control ctlfirst=1 asked=320 vars=320 decisions=14590389
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	halving	3	UNKNOWN	60000000921	UNKNOWN	60000000516	control ctlfirst=1 asked=320 vars=320 decisions=16516204
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	halving	4	UNKNOWN	60000008539	UNKNOWN	60000002631	control ctlfirst=1 asked=320 vars=320 decisions=16859200
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	halving	5	UNKNOWN	60000003288	UNKNOWN	60000020802	control ctlfirst=1 asked=320 vars=320 decisions=14649263
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	split	2	SATISFIABLE	34388197619	SATISFIABLE	34214056933	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=180536548 lemmas=0 pre=353874087 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5737239 s1loads=1
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	split	3	UNKNOWN	60000015084	UNKNOWN	60000000516	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=180538504 lemmas=0 pre=353874087 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5737239 s1loads=1
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	triples	2	SATISFIABLE	34207661071	SATISFIABLE	34214056933	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	triples	3	UNKNOWN	60000001724	UNKNOWN	60000000516	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	halving	2	UNKNOWN	60000012112	UNKNOWN	60000007641	control ctlfirst=1 asked=324 vars=324 decisions=9271603
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	halving	3	UNKNOWN	60000004959	UNKNOWN	60000000394	control ctlfirst=1 asked=324 vars=324 decisions=6883457
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	halving	4	UNKNOWN	60000001334	SATISFIABLE	53845682099	control ctlfirst=1 asked=324 vars=324 decisions=8141632
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	halving	5	UNKNOWN	60000000171	SATISFIABLE	50023677351	control ctlfirst=1 asked=324 vars=324 decisions=8551774
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	split	2	UNKNOWN	60000003541	UNKNOWN	60000007641	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=179193851 lemmas=0 pre=352920664 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5695623 s1loads=1
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	split	3	UNKNOWN	60000001876	UNKNOWN	60000000394	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=179190200 lemmas=0 pre=352920664 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5695623 s1loads=1
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	triples	2	UNKNOWN	60000006549	UNKNOWN	60000007641	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	triples	3	UNKNOWN	60000000077	UNKNOWN	60000000394	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_CSO_IXA_ZR	halving	2	UNKNOWN	60000000027	SATISFIABLE	54703080126	control ctlfirst=1 asked=342 vars=342 decisions=18393895
+bp4_CSO_IXA_ZR	halving	3	UNKNOWN	60000004787	SATISFIABLE	3792351498	control ctlfirst=1 asked=342 vars=342 decisions=18793245
+bp4_CSO_IXA_ZR	halving	4	UNKNOWN	60000006095	SATISFIABLE	26065653894	control ctlfirst=1 asked=342 vars=342 decisions=22387267
+bp4_CSO_IXA_ZR	halving	5	UNKNOWN	60000002577	SATISFIABLE	12375955021	control ctlfirst=1 asked=342 vars=342 decisions=20397196
+bp4_CSO_IXA_ZR	split	2	SATISFIABLE	54916496678	SATISFIABLE	54703080126	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=220216402 lemmas=0 pre=376102103 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=6978214 s1loads=1
+bp4_CSO_IXA_ZR	split	3	SATISFIABLE	4005768504	SATISFIABLE	3792351498	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=220216856 lemmas=0 pre=376102103 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=6978214 s1loads=1
+bp4_CSO_IXA_ZR	triples	2	SATISFIABLE	54696280276	SATISFIABLE	54703080126	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_CSO_IXA_ZR	triples	3	SATISFIABLE	3785551648	SATISFIABLE	3792351498	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_IXA_FPBEQ_ZR	halving	2	UNKNOWN	60000002114	SATISFIABLE	3806883003	control ctlfirst=1 asked=342 vars=342 decisions=14376108
+bp4_IXA_FPBEQ_ZR	halving	3	UNKNOWN	60000003531	SATISFIABLE	11288952564	control ctlfirst=1 asked=342 vars=342 decisions=13870065
+bp4_IXA_FPBEQ_ZR	halving	4	UNKNOWN	60000000953	SATISFIABLE	21225921475	control ctlfirst=1 asked=342 vars=342 decisions=8016455
+bp4_IXA_FPBEQ_ZR	halving	5	UNKNOWN	60000020554	SATISFIABLE	46261850232	control ctlfirst=1 asked=342 vars=342 decisions=16463772
+bp4_IXA_FPBEQ_ZR	split	2	SATISFIABLE	3975404605	SATISFIABLE	3806883003	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=174732489 lemmas=0 pre=346686066 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5556007 s1loads=1
+bp4_IXA_FPBEQ_ZR	split	3	SATISFIABLE	11457474200	SATISFIABLE	11288952564	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=174732523 lemmas=0 pre=346686066 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5556007 s1loads=1
+bp4_IXA_FPBEQ_ZR	triples	2	SATISFIABLE	3800672116	SATISFIABLE	3806883003	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_IXA_FPBEQ_ZR	triples	3	SATISFIABLE	11282741677	SATISFIABLE	11288952564	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_LPI_FPBEQ_ZR	halving	2	UNKNOWN	60000008214	UNKNOWN	60000001151	control ctlfirst=1 asked=381 vars=381 decisions=8154942
+bp4_LPI_FPBEQ_ZR	halving	3	UNKNOWN	60000000892	UNKNOWN	60000008463	control ctlfirst=1 asked=381 vars=381 decisions=11727423
+bp4_LPI_FPBEQ_ZR	halving	4	UNKNOWN	60000009298	UNKNOWN	60000001753	control ctlfirst=1 asked=381 vars=381 decisions=10282393
+bp4_LPI_FPBEQ_ZR	halving	5	UNKNOWN	60000010501	SATISFIABLE	28235762726	control ctlfirst=1 asked=381 vars=381 decisions=11896510
+bp4_LPI_FPBEQ_ZR	split	2	UNKNOWN	60000000760	UNKNOWN	60000001151	control ctlsplit=1 status=costly cases=2 refuted=1 unknown=1 sat=0 work=180708421 lemmas=0 pre=344035730 read=0 stage1=2 s1refuted=0 s1skipped=0 s1open=2 s1work=10882541 s1loads=2
+bp4_LPI_FPBEQ_ZR	split	3	UNKNOWN	60000013612	UNKNOWN	60000008463	control ctlsplit=1 status=costly cases=2 refuted=1 unknown=1 sat=0 work=180718783 lemmas=0 pre=344035730 read=0 stage1=2 s1refuted=0 s1skipped=0 s1open=2 s1work=10882541 s1loads=2
+bp4_LPI_FPBEQ_ZR	triples	2	UNKNOWN	60000009242	UNKNOWN	60000001151	control ctlfirst=1 asked=420 vars=420 decisions=0
+bp4_LPI_FPBEQ_ZR	triples	3	UNKNOWN	60000012882	UNKNOWN	60000008463	control ctlfirst=1 asked=420 vars=420 decisions=0
+bp4_TCO_CSO_IXA_LP_ZR	halving	2	UNKNOWN	60000001830	UNKNOWN	60000005889	control ctlfirst=1 asked=514 vars=514 decisions=19744883
+bp4_TCO_CSO_IXA_LP_ZR	halving	3	UNKNOWN	60000000959	UNKNOWN	60000007294	control ctlfirst=1 asked=514 vars=514 decisions=19399012
+bp4_TCO_CSO_IXA_LP_ZR	halving	4	UNKNOWN	60000004164	UNKNOWN	60000011011	control ctlfirst=1 asked=514 vars=514 decisions=20769856
+bp4_TCO_CSO_IXA_LP_ZR	halving	5	UNKNOWN	60000000696	SATISFIABLE	15453261469	control ctlfirst=1 asked=514 vars=514 decisions=16586992
+bp4_TCO_CSO_IXA_LP_ZR	split	2	UNKNOWN	60000001598	UNKNOWN	60000005889	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=229653455 lemmas=0 pre=385822591 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=7273405 s1loads=1
+bp4_TCO_CSO_IXA_LP_ZR	split	3	UNKNOWN	60000010001	UNKNOWN	60000007294	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=229652182 lemmas=0 pre=385822591 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=7273405 s1loads=1
+bp4_TCO_CSO_IXA_LP_ZR	triples	2	UNKNOWN	60000002093	UNKNOWN	60000005889	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_TCO_CSO_IXA_LP_ZR	triples	3	UNKNOWN	60000006279	UNKNOWN	60000007294	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_TCO_CSO_ZR	halving	2	UNKNOWN	60000000620	UNKNOWN	60000000958	control ctlfirst=1 asked=342 vars=342 decisions=25366638
+bp4_TCO_CSO_ZR	halving	3	UNKNOWN	60000000125	UNKNOWN	60000003274	control ctlfirst=1 asked=342 vars=342 decisions=25946884
+bp4_TCO_CSO_ZR	halving	4	UNKNOWN	60000003962	UNKNOWN	60000006084	control ctlfirst=1 asked=342 vars=342 decisions=30224629
+bp4_TCO_CSO_ZR	halving	5	UNKNOWN	60000000356	UNKNOWN	60000003674	control ctlfirst=1 asked=342 vars=342 decisions=23738497
+bp4_TCO_CSO_ZR	split	2	UNKNOWN	60000015612	UNKNOWN	60000000958	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=219992977 lemmas=0 pre=375925000 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=6969022 s1loads=1
+bp4_TCO_CSO_ZR	split	3	UNKNOWN	60000002749	UNKNOWN	60000003274	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=219985115 lemmas=0 pre=375925000 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=6969022 s1loads=1
+bp4_TCO_CSO_ZR	triples	2	UNKNOWN	60000001573	UNKNOWN	60000000958	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_TCO_CSO_ZR	triples	3	UNKNOWN	60000002858	UNKNOWN	60000003274	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_TCO_IXA_FPBLE_ZR	halving	2	UNKNOWN	60000001265	SATISFIABLE	47057554897	control ctlfirst=1 asked=342 vars=342 decisions=10114635
+bp4_TCO_IXA_FPBLE_ZR	halving	3	UNKNOWN	60000008641	UNKNOWN	60000002129	control ctlfirst=1 asked=342 vars=342 decisions=11633445
+bp4_TCO_IXA_FPBLE_ZR	halving	4	UNKNOWN	60000026189	SATISFIABLE	33785297635	control ctlfirst=1 asked=342 vars=342 decisions=13088517
+bp4_TCO_IXA_FPBLE_ZR	halving	5	UNKNOWN	60000022536	UNKNOWN	60000003465	control ctlfirst=1 asked=342 vars=342 decisions=7912099
+bp4_TCO_IXA_FPBLE_ZR	split	2	SATISFIABLE	47225834790	SATISFIABLE	47057554897	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=174483195 lemmas=0 pre=344021669 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5546879 s1loads=1
+bp4_TCO_IXA_FPBLE_ZR	split	3	UNKNOWN	60000002741	UNKNOWN	60000002129	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=174483976 lemmas=0 pre=344021669 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=5546879 s1loads=1
+bp4_TCO_IXA_FPBLE_ZR	triples	2	SATISFIABLE	47051351595	SATISFIABLE	47057554897	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp4_TCO_IXA_FPBLE_ZR	triples	3	UNKNOWN	60000003150	UNKNOWN	60000002129	control ctlfirst=1 asked=444 vars=444 decisions=0
+bp5_CSO	halving	2	UNKNOWN	60000005677	SATISFIABLE	6057749846	control ctlfirst=1 asked=1048 vars=1048 decisions=38595893
+bp5_CSO	halving	3	UNKNOWN	60000004015	SATISFIABLE	14212598901	control ctlfirst=1 asked=1048 vars=1048 decisions=39251993
+bp5_CSO	halving	4	UNKNOWN	60000001840	SATISFIABLE	6996711006	control ctlfirst=1 asked=1048 vars=1048 decisions=45084455
+bp5_CSO	halving	5	UNKNOWN	60000008411	SATISFIABLE	28882329889	control ctlfirst=1 asked=1048 vars=1048 decisions=43708578
+bp5_CSO	split	2	SATISFIABLE	7215760771	SATISFIABLE	6057749846	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=1194040186 lemmas=0 pre=965114733 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=37821387 s1loads=1
+bp5_CSO	split	3	SATISFIABLE	15370604535	SATISFIABLE	14212598901	control ctlsplit=1 status=costly cases=1 refuted=0 unknown=1 sat=0 work=1194034895 lemmas=0 pre=965114733 read=0 stage1=1 s1refuted=0 s1skipped=0 s1open=1 s1work=37821387 s1loads=1
+bp5_CSO	triples	2	SATISFIABLE	6021720585	SATISFIABLE	6057749846	control ctlfirst=1 asked=1485 vars=1485 decisions=0
+bp5_CSO	triples	3	SATISFIABLE	14176569640	SATISFIABLE	14212598901	control ctlfirst=1 asked=1485 vars=1485 decisions=0

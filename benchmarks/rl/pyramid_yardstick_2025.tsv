@@ -1,0 +1,166 @@
+puzzle	method	seed	status	seconds	note
+bare	choco-labels	0	SAT	3.9	fails=15405 restarts=61
+bare	choco-labels	1	SAT	2.7	fails=10205 restarts=44
+bare	choco-labels	2	SAT	5.9	fails=22462 restarts=78
+bare	choco-labels	3	SAT	19.3	fails=70747 restarts=220
+bare	choco-mixed	0	SAT	3.2	fails=6175 restarts=29
+bare	choco-mixed	1	SAT	11.3	fails=23694 restarts=85
+bare	choco-mixed	2	SAT	22.0	fails=47845 restarts=141
+bare	choco-mixed	3	SAT	14.2	fails=29226 restarts=107
+bare	choco-tightest	0	UNKNOWN	300.0	fails=623872 restarts=1318
+bare	choco-tightest	1	SAT	7.5	fails=12073 restarts=52
+bare	choco-tightest	2	SAT	8.0	fails=12746 restarts=55
+bare	choco-tightest	3	SAT	38.7	fails=65990 restarts=202
+bare	cpsat-bool	0	SAT	9.3	found_by=main conflicts=9515 branches=116863
+bare	cpsat-bool	1	SAT	16.7	found_by=main conflicts=27753 branches=141985
+bare	cpsat-bool	2	SAT	12.0	found_by=main conflicts=15789 branches=102164
+bare	cpsat-bool	3	SAT	9.5	found_by=main conflicts=8795 branches=83273
+bare	cpsat-table	0	SAT	22.9	found_by=main conflicts=27750 branches=398504
+bare	cpsat-table	1	SAT	23.0	found_by=main conflicts=20580 branches=275908
+bare	cpsat-table	2	SAT	48.2	found_by=main conflicts=49747 branches=486103
+bare	cpsat-table	3	SAT	31.4	found_by=main conflicts=30878 branches=385986
+bare	ours	0	SAT	7.5	
+bare	ours	1	SAT	6.0	
+bare	ours	2	SAT	9.0	
+bare	ours	3	SAT	7.5	
+cell.bp4_BC012_AM_FPBEQ_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4439192 restarts=7975
+cell.bp4_BC012_AM_FPBEQ_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4085366 restarts=7164
+cell.bp4_BC012_AM_FPBEQ_ZR	choco-labels	2	UNKNOWN	1800.0	fails=3956690 restarts=7034
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=741591 branches=2711555
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=674926 branches=2527741
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=727433 branches=2529005
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=640077 branches=3464093
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=657292 branches=3484318
+cell.bp4_BC012_AM_FPBEQ_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=649399 branches=3728102
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4145700 restarts=7318
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	choco-labels	1	UNKNOWN	1800.0	fails=3993306 restarts=7152
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	choco-labels	2	UNKNOWN	1800.0	fails=3861407 restarts=6793
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=721105 branches=2675329
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=706576 branches=2628434
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=675106 branches=2583225
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=697547 branches=3591684
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-table	1	UNKNOWN	1801.0	conflicts=620492 branches=3337270
+cell.bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=635290 branches=3552026
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4192516 restarts=7419
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	choco-labels	1	UNKNOWN	1800.0	fails=3863641 restarts=6802
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	choco-labels	2	UNKNOWN	1800.0	fails=3967132 restarts=7063
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-bool	0	UNKNOWN	1800.1	conflicts=782371 branches=2914502
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=671228 branches=2564011
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=702365 branches=2717513
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=645511 branches=4193962
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=623046 branches=3914527
+cell.bp4_BC012_CSO_FPBEQ_FPBLE_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=631481 branches=3868757
+cell.bp4_CSO_IXA_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4106379 restarts=7209
+cell.bp4_CSO_IXA_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4277794 restarts=7671
+cell.bp4_CSO_IXA_ZR	choco-labels	2	UNKNOWN	1800.0	fails=4277865 restarts=7671
+cell.bp4_CSO_IXA_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=5369355 branches=11558653
+cell.bp4_CSO_IXA_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=5243722 branches=11448916
+cell.bp4_CSO_IXA_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=5307672 branches=11986878
+cell.bp4_CSO_IXA_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=2804947 branches=11696159
+cell.bp4_CSO_IXA_ZR	cpsat-table	1	UNKNOWN	1800.3	conflicts=2387236 branches=10624958
+cell.bp4_CSO_IXA_ZR	cpsat-table	2	UNKNOWN	1800.3	conflicts=2507588 branches=11130930
+cell.bp4_IXA_FPBEQ_ZR	choco-labels	0	SAT	158.1	fails=360798 restarts=865
+cell.bp4_IXA_FPBEQ_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4096711 restarts=7170
+cell.bp4_IXA_FPBEQ_ZR	choco-labels	2	UNKNOWN	1800.0	fails=4099698 restarts=7183
+cell.bp4_IXA_FPBEQ_ZR	cpsat-bool	0	UNKNOWN	1800.2	conflicts=779188 branches=3325703
+cell.bp4_IXA_FPBEQ_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=808003 branches=3536343
+cell.bp4_IXA_FPBEQ_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=835245 branches=3317313
+cell.bp4_IXA_FPBEQ_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=667965 branches=4280929
+cell.bp4_IXA_FPBEQ_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=686679 branches=4326333
+cell.bp4_IXA_FPBEQ_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=740288 branches=4632279
+cell.bp4_LPI_FPBEQ_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4482327 restarts=8094
+cell.bp4_LPI_FPBEQ_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4448010 restarts=7994
+cell.bp4_LPI_FPBEQ_ZR	choco-labels	2	UNKNOWN	1800.0	fails=4212313 restarts=7480
+cell.bp4_LPI_FPBEQ_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=703582 branches=2624281
+cell.bp4_LPI_FPBEQ_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=693582 branches=2758806
+cell.bp4_LPI_FPBEQ_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=719525 branches=2887683
+cell.bp4_LPI_FPBEQ_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=618099 branches=3948648
+cell.bp4_LPI_FPBEQ_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=600862 branches=3631973
+cell.bp4_LPI_FPBEQ_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=637804 branches=4053745
+cell.bp4_TCO_CSO_IXA_LP_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4525771 restarts=8185
+cell.bp4_TCO_CSO_IXA_LP_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4437005 restarts=7964
+cell.bp4_TCO_CSO_IXA_LP_ZR	choco-labels	2	UNKNOWN	1800.0	fails=4489021 restarts=8119
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-bool	0	UNKNOWN	1800.5	conflicts=5600191 branches=10699306
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=5356293 branches=10512713
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=5511892 branches=10933335
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=2414267 branches=10105214
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=2406124 branches=10116109
+cell.bp4_TCO_CSO_IXA_LP_ZR	cpsat-table	2	UNKNOWN	1800.3	conflicts=2692199 branches=10442899
+cell.bp4_TCO_CSO_ZR	choco-labels	0	UNKNOWN	1800.0	fails=5700558 restarts=9083
+cell.bp4_TCO_CSO_ZR	choco-labels	1	UNKNOWN	1800.0	fails=5080182 restarts=8190
+cell.bp4_TCO_CSO_ZR	choco-labels	2	UNKNOWN	1800.0	fails=5336915 restarts=8243
+cell.bp4_TCO_CSO_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=3272121 branches=8190791
+cell.bp4_TCO_CSO_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=3208057 branches=8007657
+cell.bp4_TCO_CSO_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=3408609 branches=8417794
+cell.bp4_TCO_CSO_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=1579346 branches=10193810
+cell.bp4_TCO_CSO_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=1643797 branches=10758615
+cell.bp4_TCO_CSO_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=1663278 branches=11062657
+cell.bp4_TCO_IXA_FPBLE_ZR	choco-labels	0	UNKNOWN	1800.0	fails=4366912 restarts=7802
+cell.bp4_TCO_IXA_FPBLE_ZR	choco-labels	1	UNKNOWN	1800.0	fails=4853988 restarts=8189
+cell.bp4_TCO_IXA_FPBLE_ZR	choco-labels	2	UNKNOWN	1800.0	fails=4409204 restarts=7928
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-bool	0	UNKNOWN	1800.0	conflicts=2487074 branches=7738015
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-bool	1	UNKNOWN	1800.0	conflicts=2217427 branches=6920754
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-bool	2	UNKNOWN	1800.0	conflicts=2612714 branches=8053358
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-table	0	UNKNOWN	1800.0	conflicts=1919177 branches=9389153
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-table	1	UNKNOWN	1800.0	conflicts=1907170 branches=9692107
+cell.bp4_TCO_IXA_FPBLE_ZR	cpsat-table	2	UNKNOWN	1800.0	conflicts=2359212 branches=11060537
+cell.bp5_CSO	choco-labels	0	UNKNOWN	1800.0	fails=1589211 restarts=3069
+cell.bp5_CSO	choco-labels	1	UNKNOWN	1800.0	fails=1471383 restarts=2865
+cell.bp5_CSO	choco-labels	2	UNKNOWN	1800.0	fails=1405482 restarts=2705
+cell.bp5_CSO	cpsat-bool	0	UNKNOWN	1800.1	conflicts=1404238 branches=4064293
+cell.bp5_CSO	cpsat-bool	1	UNKNOWN	1800.1	conflicts=1239036 branches=3879247
+cell.bp5_CSO	cpsat-bool	2	UNKNOWN	1800.1	conflicts=1181219 branches=3430384
+cell.bp5_CSO	cpsat-table	0	UNKNOWN	1800.1	conflicts=502565 branches=7911872
+cell.bp5_CSO	cpsat-table	1	UNKNOWN	1799.5	conflicts=553667 branches=7169219
+cell.bp5_CSO	cpsat-table	2	UNKNOWN	1800.1	conflicts=519869 branches=1316988
+ring	choco-cells	0	UNKNOWN	1800.0	fails=6662672 restarts=10748
+ring	choco-cells	1	UNKNOWN	1800.0	fails=5271667 restarts=8190
+ring	choco-labels	0	UNKNOWN	1800.0	fails=5551185 restarts=8701
+ring	choco-labels	1	UNKNOWN	1800.0	fails=5553040 restarts=8701
+ring	choco-labels	2	UNKNOWN	1800.0	fails=5261943 restarts=8190
+ring	choco-labels	3	UNKNOWN	1800.0	fails=5484491 restarts=8626
+ring	choco-labels-chs	0	UNKNOWN	1800.0	fails=5500789 restarts=8676
+ring	choco-labels-chs	1	UNKNOWN	1800.0	fails=5075458 restarts=8190
+ring	choco-labels-nogoods	0	failed(rc 1)	0.5	
+ring	choco-labels-nogoods	1	failed(rc 1)	0.5	
+ring	choco-labels-nogoods2	0	UNKNOWN	1800.0	fails=5283393 restarts=8190
+ring	choco-labels-nogoods2	1	UNKNOWN	1800.0	fails=5121713 restarts=8190
+ring	choco-mixed	0	UNKNOWN	1800.0	fails=2548923 restarts=4349
+ring	choco-mixed	1	UNKNOWN	1800.0	fails=3045497 restarts=5359
+ring	choco-mixed	2	UNKNOWN	1800.0	fails=2867094 restarts=5106
+ring	choco-mixed	3	UNKNOWN	1800.0	fails=2625873 restarts=4552
+ring	choco-tightest	0	UNKNOWN	1804.2	fails=2280385 restarts=4094
+ring	choco-tightest	1	UNKNOWN	1800.0	fails=2306263 restarts=4094
+ring	choco-tightest	2	UNKNOWN	1808.2	fails=2327176 restarts=4094
+ring	choco-tightest	3	UNKNOWN	1806.6	fails=2224195 restarts=4093
+ring	cpsat-8workers	0	UNKNOWN	1801.2	conflicts=707572 branches=58399965
+ring	cpsat-8workers	1	UNKNOWN	1800.2	conflicts=251030 branches=20419308
+ring	cpsat-bool	0	UNKNOWN	1800.0	conflicts=3903753 branches=10586890
+ring	cpsat-bool	1	UNKNOWN	1800.0	conflicts=3982464 branches=11235846
+ring	cpsat-bool	2	UNKNOWN	1800.0	conflicts=3783843 branches=10359693
+ring	cpsat-bool	3	UNKNOWN	1799.9	conflicts=4272241 branches=11577474
+ring	cpsat-fixed-cubes	0	UNKNOWN	1800.0	conflicts=1200947 branches=1341602
+ring	cpsat-fixed-cubes	1	UNKNOWN	1800.0	conflicts=1247911 branches=1437856
+ring	cpsat-fixed-labels	0	UNKNOWN	1800.0	conflicts=1538378 branches=1772041
+ring	cpsat-fixed-labels	1	UNKNOWN	1800.0	conflicts=1314810 branches=1465485
+ring	cpsat-table	0	SAT	1716.6	found_by=main conflicts=1894454 branches=11174563
+ring	cpsat-table	1	UNKNOWN	1800.2	conflicts=2245147 branches=12679488
+ring	cpsat-table	2	UNKNOWN	1800.0	conflicts=2045289 branches=12111780
+ring	cpsat-table	3	UNKNOWN	1800.0	conflicts=2128137 branches=13379135
+ring	cpsat-table-maxlp	0	UNKNOWN	1800.0	conflicts=33489 branches=2076773
+ring	cpsat-table-maxlp	1	UNKNOWN	1800.3	conflicts=27436 branches=2078223
+ring	cpsat-table-maxlp	2	UNKNOWN	1800.0	conflicts=31956 branches=2172478
+ring	cpsat-table-maxlp	3	UNKNOWN	1801.1	conflicts=33091 branches=2095424
+ring	cpsat-table-nolp	0	SAT	1703.7	found_by=main conflicts=1894454 branches=11174563
+ring	cpsat-table-nolp	1	UNKNOWN	1800.0	conflicts=2218559 branches=12574601
+ring	cpsat-table-nolp	2	UNKNOWN	1800.0	conflicts=2162542 branches=12600999
+ring	cpsat-table-nolp	3	UNKNOWN	1800.0	conflicts=2195199 branches=13794237
+ring	cpsat-walks-only	0	UNKNOWN	1800.0	conflicts=0 branches=0
+ring	ours	0	SAT	118.1	
+ring	ours	1	UNKNOWN	1800.2	
+ring	ours	2	UNKNOWN	1800.3	
+ring	ours	3	UNKNOWN	1800.3	
+ring	ours	4	UNKNOWN	1800.3	
+ring	ours	5	SAT	511.8	
+ring	ours	6	SAT	620.8	
+ring	ours	7	UNKNOWN	1800.3	

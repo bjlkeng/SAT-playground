@@ -141,6 +141,37 @@ work is **solver 13** and the RL scheduler on top of it.
   take away the room a local search needs (oddball said the same). Order
   groups are on 46 of the 400 cells (`benchmarks/rl/order_groups_2025.tsv`):
   pyramid 20, graceful production 7, sudoku 5, 14 more.
+  G.15 to G.17, other ways to the pyramid's models (2026-11-22; beads
+  `d96.12`, `d96.13`, `d96.14.2`; solver README, "Other ways to the pyramid's
+  models"). The owner asked what else could use the reading; four ideas were
+  measured with no solver code, and **none finds these models sooner than the
+  solver's own search**. (1) The puzzle in its own terms on two constraint
+  solvers (`tools/pyramid_cp.py`; CP-SAT and Choco in the venv
+  `~/.cache/sat13-cpsat/venv`, made with `uv`; the model is checked against
+  the cells both ways): 1 model in 90 runs of 1,800 s on the ten cells'
+  option sets, where the solver finds one in 90 of 160; 1 in 37 searches with
+  only the ring fixed, the solver 3 of 8; the bare puzzle falls to every
+  method in seconds. CP-SAT turns the puzzle into clause learning on a clean
+  encoding; Choco is matching reasoning for "all different" with the smallest
+  domain decided first. (2) Every value of every label as a short question to
+  one solver (`--inccnf=1`; `log/pyramid-cp-2026-11-22/shave.py`): 748 of
+  12,159 questions fall at 200 conflicts, a plain run derives most of the
+  same facts in its first 1%, and ten times the conflicts add 35 questions
+  for a third to a half of a run's budget a cell. (3) The decision hook that
+  exists (`--ctlfirst`, a list decided first): the label bits first find no
+  model in 40 runs where the plain build finds 19. (4) Many short runs with
+  fresh seeds are worse than one long run (0.48 for two halves against 0.56).
+  **Stop looking for these models with another search**: a cell that fixes a
+  part of its choices is hard for every search we have. The owner asked for
+  an epic on guidance hooks (`d96.14`, seven steps). What is known for it: a
+  fixed decision order has lost on the oisc control word and on the pyramid's
+  labels, so guidance has to be a preference the conflicts can override; and
+  **a hook has to follow the solver's renaming**: before the search the
+  solver merges every placement variable into an equal variable under
+  another name (and has fixed 244 of the 444 listed ones after 1,000
+  conflicts), and `--ctlfirst` skips a replaced variable, so a list of
+  placements made no decision at all. Count what the solver decides on and
+  what it keeps (`d96.14.1`) before building.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode

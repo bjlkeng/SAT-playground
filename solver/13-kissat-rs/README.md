@@ -11008,6 +11008,10 @@ few choices fix everything.
   tests, 84 counts and a few hundred clauses in place of 48,000 variables
   and 750,000 clauses. A search that needs that compact model, of another
   kind than a walk, can start from it.
+- Other kinds of search were measured next (2026-11-22, "Other ways to the
+  pyramid's models" below): two constraint solvers on the puzzle in its own
+  terms, a value test and a decision order. None finds these models sooner
+  than the solver's own search.
 
 Tools: `tools/free_census.py` (`--order` on `one` and `census`; `chains`;
 `selftest`, 47 checks), `tools/free_walk.py` (`--order` on `export`, `walk`
@@ -11027,6 +11031,347 @@ now written as a plain OR, and the fields are wide), two faults in the
 census row (the share of false constraints did not count the counts, and
 the number of inputs was lost), and tables for families of tests whose size
 went with the combinations of values, not with the tests (now bounded).
+
+## Other ways to the pyramid's models: a yardstick, a value test and the decision hook (2026-11-22; beads `SAT-playground-d96.12`, `d96.13`, `d96.14.2`)
+
+**The answer.** Nothing we tried finds these models sooner than the solver's
+own search, and most of it finds them later or not at all.
+
+- *Two constraint solvers, given the puzzle in its own terms.* On the ten
+  cells' option sets they find a model in 1 of 90 runs of 1,800 s; the
+  solver finds one in 90 of 160. On the puzzle with only the ring fixed: 1 of
+  37 searches, the solver 3 of 8.
+- *Every value of every label as a short question.* 748 of 12,159 questions
+  are refuted at 200 conflicts a question, and a plain run of the solver
+  derives most of the same facts in its first 1% (73 of 74 refuted bounds
+  on one cell, 20 of 28 on another). Ten times the conflicts add 0 to 9
+  questions a cell and cost a third to a half of a run's whole budget.
+- *The label bits decided first*, with the decision hook the solver already
+  has: 0 models in 40 runs where the plain build finds 19. Two more uses of
+  the hook tested nothing, each for a reason worth knowing: the solver
+  merges every placement variable into an equal variable under another name
+  before the search starts, and the hook does not follow that; and the
+  control split turns a split over label bits down after one case.
+- *Many short runs with fresh seeds*, read from logs we had: worse than one
+  long run.
+
+So there is nothing to build for these cells and no decision is asked. The
+ten cells with a model stay at about half solved a run. The owner asked for
+an epic on guidance hooks (`SAT-playground-d96.14`, seven steps); the third
+result above is its first calibration.
+
+### The questions
+
+The label walk found no model on the ten pyramid cells that have one
+("Labels as choices" above). The owner then asked what else could use a
+higher-level reading to find models. Four of the ideas could be measured
+with no solver code:
+
+1. many short runs with fresh seeds in place of one long run;
+2. a yardstick: the puzzle in its own terms on solvers built for such
+   puzzles, to see whether any known kind of search finds these models fast,
+   and which kind (clause learning on a clean encoding, matching reasoning
+   for "all different", the smallest domain decided first, a linear program,
+   walks);
+3. a value test: every value of every label asked of one solver as a short
+   question, and every value that is refuted removed for good;
+4. the decision hook the solver already has, with the label bits or the
+   tightest cubes decided first.
+
+### A worked example
+
+Three numbers x, y, z from 0 to 3. Position A shows the pair (x, y), B shows
+(y, z), C shows (x, z). Each of the pairs (0,1), (1,3), (0,3) must show at
+exactly one position.
+
+- *The tightest thing first.* After x = 0 the pair (1,3) fits only at B. A
+  search that asks "which pair has the fewest places left, and where does it
+  go" sets y = 1 and z = 3 at once; (0,1) is then at A and (0,3) at C, and
+  the puzzle is solved without a conflict. That is what a constraint
+  solver's "smallest domain first" does, and what a decision hook could make
+  the solver do.
+- *A value test.* Ask "x = 2?". A then shows (2, y) and C shows (2, z);
+  neither can show any of the three pairs, and B cannot show all three. The
+  question is refuted and 2 leaves x for good; so does 3. Two of x's four
+  values are gone before any search.
+- *The label bits first.* x is stored as three sorted bits (x > 0, x > 1,
+  x > 2). A list of bits decided before anything else makes the search go
+  through the numbers in a fixed order: x's bits, then y's, then z's,
+  whatever the conflicts say.
+
+In the toy each of these settles the puzzle in a step or two. A size-4 cell
+with the ring fixed has 57 labels of 7 values and 84 cubes, and the cubes
+that are hardest to place, those with three equal labels, still fit at 58
+to 67 of the 84 positions in the file. So "the tightest thing" is not
+tight, a value test finds little to refute, and a fixed order over the
+labels only takes away the solver's freedom to follow its conflicts.
+
+### Many short runs: no
+
+If the time to a model were mostly luck, several short runs would beat one
+long one. From the eight-seed run of 2026-11-19 ("The runs: the added clauses
+do not make the search faster"; the ten cells, eight seeds, two builds that
+the run showed equal, 60G of work a run, about 1,800 s; 160 runs):
+
+| within | the whole budget | half | a quarter | an eighth | a sixteenth |
+|---|---|---|---|---|---|
+| runs with a model, of 160 | 90 | 53 | 27 | 12 | 2 |
+
+Cell by cell, the chance that k runs of 1/k of the budget find a model is
+0.562 for one run, 0.478 for two halves, 0.414 for four quarters and 0.399
+for eight eighths. The solver finds almost nothing in its first two minutes
+and then finds models at a steady rate; a fresh seed throws the start away
+(`log/label-walk-2026-11-21/short_runs.py`).
+
+### The yardstick
+
+**The tool.** `tools/pyramid_cp.py` writes the puzzle as it is: one number
+per line of cubes, and all positions hold different cubes. The twelve
+options of the cells' names are ported from the generator's `strategies.py`
+(github.com/acmihal/bel_pyramid). Two solvers, both Python packages in the
+venv `~/.cache/sat13-cpsat/venv` (ortools 9.15, pychoco 0.4.0); neither is a
+part of our solver:
+
+- **CP-SAT** (Google): clause learning over integer variables, with a linear
+  program beside it and a portfolio of searches. Three ways of writing the
+  puzzle: *table* (a number per position for its cube, tied to the three
+  labels by a table, and one "all different"), *dual* (the same plus a
+  number per cube for its position), and *bool* (the file's way: a placement
+  variable per position and triple of values, each cube exactly one
+  placement, and nothing that says a position holds one cube).
+- **Choco**: classic propagation and backtracking, no clause learning. "All
+  different" by matching (three cubes that can only go to two positions are
+  seen at once), tables, restarts, and searches that decide the variable
+  with the smallest domain weighted by its failures. Decided on: the labels;
+  the cubes and labels in one list; or, with a rule of our own, the cube
+  with the fewest positions left, then the labels.
+
+**Checked both ways against the cells.**
+- The 90 models the solver found on the ten cells in the eight-seed run all
+  satisfy the rules as written in the tool, each with its cell's options
+  (`pyramid_cp.py check`); a model checked against another cell's options is
+  caught.
+- 30 labellings found by the three kinds of search (CP-SAT table, CP-SAT
+  bool, Choco; half the labels of a known model kept so that the search
+  takes seconds) were written into the real cells as unit clauses on the
+  placement variables: the solver answers SATISFIABLE for all 30, and
+  UNSATISFIABLE for all 30 once one label is changed
+  (`log/pyramid-cp-2026-11-22/check_cells.py`). The one labelling a
+  constraint solver found on a cell's option set in the runs below was
+  checked the same way (`verify_found.py`).
+- A by-product: with 40 of a size-4 cell's 81 labels kept, the rest is
+  forced. In 26 of 27 cases the labelling found is the known model itself;
+  in one, 2 labels differ. A model of these cells has no loose part.
+- `pyramid_cp.py selftest` (273 checks). On sizes 2 and 3, bare and with
+  seven option sets, nine combinations of solver, model and search agree on
+  the answer, every labelling passes the rule check, and a changed label is
+  caught. At size 2 with the ring fixed all 19,683 labellings can be tried:
+  for twelve option sets that cover every option (five of them have no
+  model), the models of each of the three CP-SAT models are exactly the
+  labellings that pass the rule check, and Choco answers "a model" or
+  "none" as they do.
+
+**What was run** (`log/pyramid-cp-2026-11-22/`, `jobs_main.tsv`, `batch.py`;
+every run one process pinned to its own core, 1,800 s, 300 s on the bare
+puzzle; 26 at a time). Three puzzles: the bare size-4 puzzle; the puzzle
+with only the ring fixed (the option that stopped the walk); and the option
+sets of the ten cells with a model. Our solver's arm on the first two is
+the frozen build (sha256 `ed1ef6be63379e9e`) on the files of the label walk
+work (`bare4.cnf`, `bare4_zr.cnf`); on the cells it is the eight-seed run
+above.
+
+| puzzle | our solver | CP-SAT, table | CP-SAT, the file's way | Choco, labels | Choco, cubes and labels | Choco, tightest cube first |
+|---|---|---|---|---|---|---|
+| bare size 4 (300 s a run) | 4 of 4, 6 to 9 s | 4 of 4, 23 to 48 s | 4 of 4, 9 to 17 s | 4 of 4, 3 to 19 s | 4 of 4, 3 to 22 s | 3 of 4, 8 to 39 s |
+| only the ring fixed | 3 of 8 (118, 512, 621 s) | 1 of 4 (1,717 s) | 0 of 4 | 0 of 4 | 0 of 4 | 0 of 4 |
+| the ten cells' option sets | 90 of 160 | 0 of 30 | 0 of 30 | 1 of 30 (158 s) | not run | not run |
+
+(Runs with a model of the runs made. The solver's 90 of 160 is the
+eight-seed run above, 60G of work a run. The constraint solvers ran three
+seeds a cell.)
+
+**More searches on the ring puzzle, none with a model:** CP-SAT with its linear
+program at its fullest (0 of 4), with a fixed order "smallest domain first"
+over the labels (0 of 2) and over the cubes (0 of 2), with eight workers
+side by side for 1,800 s (0 of 2; six complete searches, a walk, a random
+first-solution search, a rounding of the linear program and a
+neighbourhood search), and with its walks alone on four workers (0 of 1).
+Choco deciding a position's whole triple of labels (0 of 2), with its
+conflict-history search (0 of 2) and with nogoods recorded at restarts (0
+of 2). CP-SAT with its linear program switched off was run too (4 runs):
+it makes the same search as the default, so it is not counted. In all, 37
+different searches of the two solvers on the ring puzzle, with one model.
+(The table of runs also holds two runs that ended at once on a fault of
+Choco's Python wrapper; they were made again.)
+
+**What CP-SAT does with the puzzle.** Its log says it: the 165 variables, 84
+tables and one "all different" become 26,020 Boolean variables and 6,820
+exactly-one constraints over 119,353 literals, and its default search does
+no integer propagation at all. It is clause learning on a clean encoding of
+the puzzle. So its arm compares two clause-learning solvers on two
+encodings, and ours is ahead on the ring puzzle and on the cells. Switching
+its linear program off changes nothing: seed 0 finds the same model after
+the same 1,894,454 conflicts. With the linear program at its fullest it
+makes about 30,000 conflicts in 1,800 s where the default makes 2 million.
+
+**Reading.**
+- *The bare puzzle is easy for every method*, as it was for the walk: 3 to
+  48 s.
+- *The ring is hard for every method.* Matching reasoning with the smallest
+  domain first (Choco, 5.5 million failed tries a run on the labels) finds
+  no ring model in 18 runs, and four of those decided the tightest cube
+  first.
+- *On the cells the constraint solvers are far behind*: one model in 90
+  runs (Choco on `bp4_IXA_FPBEQ_ZR`, 158 s), none in CP-SAT's 60. The solver
+  finds a model in 56% of its runs on the same cells.
+- So the idea "count over positions and cubes together" and the idea
+  "decide the tightest thing first" do not find these models, in the solvers
+  that are built around them. Nor does writing both sides of the puzzle
+  (each position one cube, each cube one position): CP-SAT's table model
+  does no better than its model in the file's way.
+
+### The value test
+
+**The tool.** `log/pyramid-cp-2026-11-22/shave.py`. The labels are the order
+groups of the label walk's reading. For a label with bits m[0] to m[5]
+(m[j] true says the label is above j) the questions are "at least j+1"
+(assume m[j]), "at most j" (assume not m[j]) and "exactly j" (assume m[j-1]
+and not m[j]): 969 questions for a cell with 57 labels. All go to one solver
+in its question mode (`--inccnf=1 --assumeconflicts=N`), which keeps what it
+learns from one question to the next. A refuted question is a clause for
+good. Every refuted clause was checked against every model we hold of its
+cell (5 to 16 a cell): none is broken.
+
+| cell | labels | questions | refuted at 200 conflicts (no conflict of its own + with a search) | values left of all | refuted at 2,000 | work at 200, at 2,000 |
+|---|---|---|---|---|---|---|
+| `bp4_BC012_AM_FPBEQ_ZR` | 55 | 917 | 32 (25 + 7) | 355 of 379 | 37 | 2.9G, 22.7G |
+| `bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR` | 55 | 905 | 24 (16 + 8) | 356 of 375 | 30 | 3.2G, 24.5G |
+| `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` | 55 | 917 | 21 (16 + 5) | 362 of 379 | 29 | 2.9G, 23.9G |
+| `bp4_CSO_IXA_ZR` | 57 | 969 | 114 (112 + 2) | 325 of 399 | 114 | 2.0G, 19.6G |
+| `bp4_IXA_FPBEQ_ZR` | 57 | 969 | 114 (107 + 7) | 325 of 399 | 114 | 2.7G, 22.0G |
+| `bp4_LPI_FPBEQ_ZR` | 64 | 1,079 | 55 (44 + 11) | 408 of 445 | 64 | 3.1G, 29.0G |
+| `bp4_TCO_CSO_IXA_LP_ZR` | 90 | 1,452 | 264 (256 + 8) | 436 of 604 | 264 | 3.3G, 30.8G |
+| `bp4_TCO_CSO_ZR` | 57 | 969 | 8 (6 + 2) | 391 of 399 | 15 | 2.9G, 24.9G |
+| `bp4_TCO_IXA_FPBLE_ZR` | 57 | 969 | 116 (109 + 7) | 323 of 399 | 116 | 2.8G, 21.6G |
+| `bp5_CSO` | 131 | 3,013 | 0 | 1,179 of 1,179 | stopped: the first 1,200 questions all open | 10.2G |
+
+(The reading counts the helper numbers of the LP and LPI options as labels
+too, hence 64 and 90. A run of the solver has 60G of work.)
+
+- *What falls is what the solver finds by itself.* Of the 748 questions
+  refuted at 200 conflicts, 691 took no conflict of their own: by then the
+  question solver had learned enough for propagation to refute them (on
+  the four IXA cells nine labels are fixed that way). None of them falls to unit
+  propagation on the file as written (`dead_rup.py`: 0 of 748), so they are
+  not trivial. But a plain run derives them early: on `bp4_CSO_IXA_ZR` its
+  proof holds 56 of the 74 refuted bounds as unit clauses after 1,000
+  conflicts and 73 after 30,000 (0.70G of work, about 1% of a run); on
+  `bp4_BC012_AM_FPBEQ_ZR` none of 28 after 1,000 and 20 after 30,000.
+- *A longer search adds little and costs much.* At 2,000 conflicts a
+  question the nine size-4 cells lose 35 more questions between them (0 to
+  9 a cell) for 219G of work in place of 26G: 20 to 31G a cell, a third to
+  a half of a run. On `bp4_CSO_IXA_ZR` the same 114 questions are refuted
+  at 200, at 2,000 and at 20,000 conflicts.
+- *The questions are no better way to a model either.* At 20,000 conflicts a
+  question ten questions on that cell were answered with a model, the first
+  after 37.1G of work; the plain solver finds a model on that cell in 12 of
+  16 runs within 60G.
+- `bp5_CSO`, the cell without a fixed ring: 0 of 3,013 questions refuted.
+
+So there is nothing to write into the cells, and no timing run was made:
+most of what could be added is what the solver derives in the first 1% of
+a run (the rule of "Writing the encoding afresh": look at what the solver
+comes to hold before a timing run).
+
+### The decision hook that exists
+
+`--ctlfirst=1` makes the solver take the first free variable of a given
+list before its own choice (`SAT_CTL_VARS`; built for the control words,
+where it was a negative). Three uses on the ten cells, 60G of work a run,
+against the plain build at the same seeds (the base arm of the eight-seed
+run; today's build repeats two of its runs work for work):
+
+- *halving*: the label bits first, the middle bit of every label before the
+  quarter bits, labels read by the most placements first (320 to 1,048
+  bits; seeds 2 to 5);
+- *triples*: the placements of the cubes with three equal labels first, so
+  that the first decisions place the cubes that are hardest to place (444
+  variables on most size-4 cells; seeds 2 and 3);
+- *split*: the halving list given to the control split, which takes its
+  first six bits and tries their 64 values as cases (seeds 2 and 3).
+
+| list | runs | with a model | the plain build, same cells and seeds | work PAR-2 against the plain build | what happened |
+|---|---|---|---|---|---|
+| halving | 40 | 0 | 19 | 1.590 | the hook made the decisions |
+| triples | 20 | 8 | 8 | 1.000 | the hook made no decision |
+| split | 20 | 8 | 8 | 1.002 | the split stopped itself after one or two cases |
+
+- *Label bits first loses outright*: no model in 40 runs where the plain
+  build finds 19. With the list the hook makes every decision on the four
+  cells without face counts and 51% to 98% of them on the six with face
+  counts (the sums' own variables take the rest). A size-4 run then makes
+  1.5 to 2.0 decisions a conflict where the plain run makes 2.5 to 3.2: the
+  search has become a walk through the labels in a fixed order. It reaches
+  more conflicts in the same work and no model. This is the oisc result
+  again, where the control bits decided first tripled a cell's work.
+- *The cubes first tested nothing, and that is a finding about hooks.* The
+  hook made no decision in any of the 20 runs, and each run is the plain
+  search: the eight that find a model find it after exactly the plain run's
+  number of conflicts. The solver had renamed the listed variables. For
+  each of them its proof holds an equality with another variable (the
+  solver finds it; the file does not write it), and of two equal variables
+  the solver keeps one name: here the other one. After the first 1,000
+  conflicts none of the 21,756 placement variables that the file leaves
+  open is in a clause under its own number. Of the 444 on the list, 200
+  live on under the other name and 244 are under a name the solver has
+  already fixed (`bp4_CSO_IXA_ZR`, seed 2, rebuilt from the proof;
+  `src/substitute.rs` marks a replaced variable as eliminated, and the hook
+  skips those). So a hook has to follow the solver's renaming, and it
+  cannot steer what the solver has already decided or eliminated.
+- *The split turned itself down.* The control split stops when a case does
+  not fall to propagation. Over six label bits a case is a search, so every
+  run stopped after one case or two (0.2G to 1.2G of work) and went on as
+  the plain search: its eight models come after exactly the plain run's
+  conflicts.
+
+Only the first of the three is a test of a decision order, and it is a
+clear negative.
+
+### What it means
+
+- **For these cells: stop.** Five kinds of search have now been measured
+  against the solver's own on the pyramid's models: the walk over the
+  labels, clause learning on a clean encoding, matching with the smallest
+  domain first, a value test, and a fixed decision order. None is ahead.
+  The earlier work found the same for stronger propagation (the number
+  pass, the orders, the face counts). The ten cells with a model stay at
+  about half solved a run.
+- **A cell that fixes a part of its choices is hard for every search we
+  have.** The bare puzzle falls in seconds to all of them, the ring puzzle
+  to almost none.
+- **For guidance hooks** (epic `SAT-playground-d96.14`): a fixed order over
+  the real choices has now lost on two families, the oisc control word and
+  the pyramid's labels. That says nothing yet about a preference the
+  conflicts can override, which is the epic's third step. And a hook has to
+  speak in the variables the solver holds: before the search began the
+  solver had merged every placement variable into an equal one under
+  another name and fixed more than half of the listed ones. Both go into
+  the epic's first step, which counts what the solver decides on today and
+  what it keeps, before anything is built.
+
+Tools: `tools/pyramid_cp.py` (`solve`, `check`, `labels`, `units`,
+`cellwith`, `selftest`); tables `benchmarks/rl/pyramid_yardstick_2025.tsv`,
+`pyramid_values_2025.tsv` and `pyramid_ctlfirst_2025.tsv`; scripts, job
+tables and outputs in `log/pyramid-cp-2026-11-22/` (`batch.py`,
+`check_cells.py`, `verify_found.py`, `shave.py`, `domains.py`,
+`ctl_lists.py`, `summ.py`, `summ_ctl.py`). Every model of the hook runs was checked against its cell
+(`verify_sat.py`, 16 of 16). Codex reviewed the change in three rounds; the last two found no actionable bug. The
+first round found three faults in the tool, none of which touched a run that was made
+(checked: no run ended early without an answer): a setting CP-SAT refuses
+was printed as an ordinary "unknown" (now an error), the lex order of the
+AM option overflowed at size 5 (now written place by place where the lists
+are long), and a time limit below one second crashed Choco. The fixed tool
+repeats two recorded runs exactly.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
