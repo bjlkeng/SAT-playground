@@ -125,6 +125,11 @@ pub fn prepare(solver: &mut Solver) {
 /// The parser's literal sink: buffer, or add to the solver.
 #[inline]
 pub fn sink(solver: &mut Solver, elit: i32) {
+    // Not in kissat: the largest variable the formula uses, for the count by
+    // role (src/roles.rs; off by default)
+    if solver.roles.tracking {
+        crate::roles::used(solver, elit);
+    }
     if !solver.structure.buffering {
         crate::internal::add(solver, elit);
         if solver.control.keeping {

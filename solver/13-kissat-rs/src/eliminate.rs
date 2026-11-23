@@ -451,6 +451,12 @@ fn eliminate_variable(solver: &mut Solver, idx: u32) -> bool {
     if !crate::resolve::generate_resolvents(solver, idx, &mut lit) {
         return false;
     }
+    // Not in kissat: a variable that goes while two clauses make it equal to
+    // another is replaced by that one, for the count by role (src/roles.rs;
+    // off by default)
+    if solver.roles.on {
+        crate::roles::eliminating(solver, idx);
+    }
     connect_resolvents(solver);
     if !solver.inconsistent {
         weaken_clauses(solver, lit);

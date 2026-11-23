@@ -480,6 +480,12 @@ fn do_fast_eliminate(solver: &mut Solver, pivot: u32) {
         i += 1;
     }
     debug_assert!(!solver.inconsistent);
+    // Not in kissat: a variable that goes while two clauses make it equal to
+    // another is replaced by that one, for the count by role (src/roles.rs;
+    // off by default).  Its clauses are still in place here.
+    if solver.roles.on {
+        crate::roles::eliminating(solver, pivot);
+    }
     solver.statistics.eliminated += 1; // INC (eliminated)
     solver.statistics.fast_eliminated += 1; // INC (fast_eliminated)
     crate::flags::mark_eliminated_variable(solver, pivot);

@@ -19,6 +19,16 @@ if [[ -z "$OUTDIR" ]]; then
   exec "$SCRIPT_DIR/target/release/sat-solver" $EXTRA_ARGS "$CNF"
 fi
 
+# The count of decisions by role (--rolecount=1 with SAT_ROLE_FILE,
+# src/roles.rs) is a measuring tool for direct runs of the binary.  Its role
+# file is an input, and this wrapper cannot tell reliably whether that input
+# is one of the files it writes, truncates or removes below.  So with an
+# output directory and a role file named, nothing is run and no file is
+# touched.
+if [[ -n "${SAT_ROLE_FILE:-}" ]]; then
+  echo "run.sh: SAT_ROLE_FILE is set: the count of decisions by role is for runs of the binary itself, not for a run with an output directory; nothing was run or written" >&2
+  exit 1
+fi
 mkdir -p "$OUTDIR"
 STDOUT_TMP="$OUTDIR/solver_stdout.tmp"
 # The RL log (SAT_POLICY_LOG, plan step A.5) may not name one of the files

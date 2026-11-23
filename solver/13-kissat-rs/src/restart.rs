@@ -161,6 +161,10 @@ pub fn restart(solver: &mut Solver) {
     } else {
         solver.statistics.focused_restarts += 1; // INC (focused_restarts)
     }
+    // Not in kissat: the next decision is the first after a restart (src/roles.rs; off by default)
+    if solver.roles.on {
+        crate::roles::restarting(solver);
+    }
     let level = reuse_trail(solver);
     crate::print::extremely_verbose(
         solver,

@@ -190,6 +190,10 @@ fn switch_to_focused_mode(solver: &mut Solver) {
         count,
         &format_args!("switching to focused mode after {} conflicts", conflicts),
     );
+    // Not in kissat: the conflicts so far go to the mode that ends (src/roles.rs; off by default)
+    if solver.roles.on {
+        crate::roles::switching(solver);
+    }
     solver.stable = false;
     update_mode_limit(solver, delta);
     crate::profile::start(solver, crate::profile::Prof::focused); // START (focused)
@@ -205,6 +209,10 @@ fn switch_to_stable_mode(solver: &mut Solver) {
     crate::report::report(solver, false, '}'); // REPORT (0, '}')
     crate::profile::stop(solver, crate::profile::Prof::focused); // STOP (focused)
     solver.statistics.stable_modes += 1; // INC (stable_modes): METRIC, re-enabled (never printed)
+    // Not in kissat: the conflicts so far go to the mode that ends (src/roles.rs; off by default)
+    if solver.roles.on {
+        crate::roles::switching(solver);
+    }
     solver.stable = true;
     // GET (stable_modes) on a METRIC counter yields UINT64_MAX in the
         // reference (non-METRICS) build, which suppresses the phase count.

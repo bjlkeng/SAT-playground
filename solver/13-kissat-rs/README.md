@@ -11373,6 +11373,290 @@ AM option overflowed at size 5 (now written place by place where the lists
 are long), and a time limit below one second crashed Choco. The fixed tool
 repeats two recorded runs exactly.
 
+## What the solver decides on, by role: a counter and its first table (2026-11-22; bead `SAT-playground-d96.14.1`, first step of the hooks epic `d96.14`)
+
+**The answer.** A hook that guides decisions can only help where the solver's
+own decisions go elsewhere. So before any hook is built, this step counts
+where they go today, on 42 cells where a reading names the roles.
+
+- *The solver already decides on the real choices.* Take the variables that
+  are not computed from others: the reading's choices, its free variables and
+  the bits of numbers. On 41 of the 42 cells their share of the decisions is
+  above their share of the variables, often far above. Pyramid label bits:
+  0.8% of the variables the solver holds, 19% of its decisions, 43% of the
+  decisions in the first ten levels of the trail. Lockchart choices, groups 2
+  and 3: 6 to 10% of the variables, 30 to 41% of the decisions. The one cell
+  below is `case6`.
+- *One family where it does not: oisc.* The control word (8 to 15 bits of 4
+  to 13 million variables) gets 71 to 314 of 0.5 to 1.5 million decisions a
+  run. A third to two thirds of its bits are set at a typical conflict all
+  the same, by propagation from other decisions. This is the family where
+  the control split, which is on by default, already does the guiding.
+- *The value is the open side.* When the solver decides on a member of an
+  exactly-one group it mostly says "not this one": 12% of the decisions on a
+  pyramid placement try true, 4 to 13% on the choices of vmpc, oddball and
+  ET, 16% on timetable's, 32 to 49% on lockchart's. Label bits are tried true
+  half the time.
+- *A list of variable numbers goes stale.* On the pyramid no placement is
+  held under its own number even at the first decision: 23% are fixed, the
+  rest are replaced by an equal variable. The label bits are all there at
+  the start, 93% of them after 1,000 conflicts and 45% at the end of a run:
+  by then the solver has eliminated a third of them. On the three large oisc
+  cells 4 to 8 of the control word's 11 to 15 bits are replaced by an equal
+  variable in the course of a run, and 2 more are fixed.
+- *Much of what the solver decides on is not in the file at all.* On the
+  size-4 pyramid cells 42 to 53% of the variables it holds after 1,000
+  conflicts are ones it made itself (its `factor` step), and they take 15% of
+  the decisions. On `case6` they take 80%.
+
+**What it means for the hooks epic.** "Prefer the choices" pushes on a door
+that is already open, and decided strictly first it lost on the pyramid
+(`d96.14.2`). What the count leaves to try in the next step (`d96.14.3`) is
+smaller than the epic assumed: a preferred *value* for the members of a
+group, and a hook that follows the solver's renaming, which this counter now
+does and a hook can reuse. Both can be tried with almost no code first: the
+solver's own switch for "always try this value first" exists already
+(`--forcephase=1` with `--phase`).
+
+### What was built
+
+- **`--rolecount=1`** (`src/roles.rs`, off by default). The solver reads a
+  role for each variable from the file named by `SAT_ROLE_FILE` and counts,
+  without touching the search:
+  - the decisions by the role of the decided variable, in both search modes
+    (focused: kissat's mode with many restarts; stable: few restarts), how
+    many of them try the value true, and the first decision after each
+    restart;
+  - what stands on the trail (the solver's current partial assignment) at
+    one conflict in 128: the decisions of the first ten levels by role, and
+    how many variables of each role are set, by a decision or by
+    propagation;
+  - at checkpoints (the first decision, then 1,000, 10,000, ... conflicts,
+    and the end) what became of each role's variables: held under its own
+    number, fixed, eliminated, or replaced by an equal variable.
+- **Following the renaming.** When the solver finds two variables equal it
+  keeps one and drops the other. A decision on the kept one is a decision on
+  the dropped one too. So every count is kept twice: *own* goes by the
+  decided variable's own role, and *stands* counts the decision for every
+  role the variable stands for, its own and those of the variables replaced
+  by it. Three places replace a variable: substitution, and the two kinds of
+  variable elimination when two clauses make the variable equal to another.
+- **A role file** is plain text, `<variable> <role>` or `<first>-<last>
+  <role>` a line. A variable of the formula the file does not list is
+  `unlisted`; a variable the solver makes itself is `new`.
+- **`tools/role_file.py`** writes the file from the free-choice reading:
+  `fixed`, `choice`, `number` (a bit of a number stored as sorted bits),
+  `test` (computed from numbers alone), `def`, `gate`, `helper`, `free`.
+  `--name FIRST-LAST=ROLE` names a range of the caller's (the control word,
+  the pyramid's placements) and prints what the reading had said of it, which
+  checks the reading: of the 28,812 placement variables of `bp4_CSO_IXA_ZR`
+  the reading calls 21,128 a test on numbers and 7,684 fixed. `from-reading`
+  writes the same file from a saved reading (the size-5 pyramid cell takes
+  1.6 hours to read).
+- **`tools/role_count.py`** turns the runs' output into two tables, checks
+  that the count left the search alone (`same`), and prints the summaries
+  (`report`).
+
+### A worked example
+
+260 variables: 40 originals, 40 copies and 180 others. Each copy is made
+equal to its original by two clauses, and takes about half of its original's
+places in a random formula. The role file says `1-40 orig`, `41-220 rest`,
+`221-260 copy`.
+
+| step | what happens | what the counter notes |
+|---|---|---|
+| before the first decision | the solver finds all 40 equal pairs and keeps one name of each: the original's for 21, the copy's for 19 | 40 replacements; each kept variable now stands for both roles |
+| a decision on a kept variable | say the copy's name was kept and it is set true | own: `copy` +1. Stands: `copy` +1 and `orig` +1. Tried true: both +1 |
+| a decision on one of the 180 others | | own and stands: `rest` +1 |
+| the end, 79,670 decisions | 19,142 were on a pair's variable | own: `orig` 10,240, `copy` 8,902. Stands: 19,142 for each |
+
+So by their own numbers the originals got 13% of the decisions and the copies
+11%, and neither number says what happened: a pair is one variable, and the
+pairs together got 24% of the decisions with 18% of the variables. When a
+copy is made the *opposite* of its original, a decision that sets the kept
+variable true counts as "true" for one role and "false" for the other
+(`tests/roles.rs`).
+
+On the pyramid this is the whole story of the placements: none is decided
+under its own number, and 47% of all decisions are on a variable that stands
+for one.
+
+### Checked first
+
+`tests/roles.rs`, 17 tests, and `cargo test` in whole:
+
+- off means off: the environment variable is not read, the search is stock;
+- with the count on the search is the same, counter for counter and on the
+  work clock, on random formulas with and without a model, on formulas with
+  planted equal pairs, on pigeons, with the stock path and with the shipped
+  defaults;
+- the roles' decisions add up to the solver's own count in each mode, the
+  modes' conflicts to the run's, and one conflict in 128 is a sample;
+- a replaced variable is followed, by substitution and by elimination, equal
+  or opposite, and through a chain of 200,000 replacements without walking it
+  twice;
+- a variable the solver makes itself is `new`, whether a structure pass adds
+  it or the search does, and whatever the file's header declares;
+- a role file that cannot be used stops the run; a role file that is one of
+  the run's own files (the formula, the proof, an output, the policy's log)
+  is refused before any file is opened and stays as it was; the competition
+  wrapper with an output directory does not run at all with a role file
+  named;
+- a run ended by a signal prints the checkpoints it had.
+
+### The measurement
+
+42 cells of 2025, seeds 2 and 3, 30G of work a run (`SAT_LIMIT_TICKS`), the
+walk and the control split off (`--freewalk=0 --ctlsplit=0`: they solve the
+lockchart and the oisc cells before the search, and the question is what the
+search decides on). `log/decision-roles-2026-11-22/`, frozen binary there
+(sha256 `c3183a853502ec00`).
+
+- 12 pyramid cells (the ten with a model, two refuted): the reading with
+  numbers, and the placement variables named by their numbers.
+- 12 lockchart cells, 4 oisc cells with their control words named.
+- 14 cells of other families where the reading finds choice groups.
+
+**The same search.** Each cell ran a third time at seed 2 with the count
+off: every counter of the statistics and every field of the work clock is
+equal on 42 of 42 cells (`role_count.py same`). The review changed the
+build after the measurement; the committed build prints the same count lines
+as the measured one on 3 of 3 reruns, and a build from between (after review
+round 7) on 10 of 10.
+
+**The variables that are not computed from others** (`choice`, `free`,
+`number`, `control`, by the decided variable's own role), as a share of what
+the solver holds after 1,000 conflicts, of its decisions, and of the
+decisions in the first ten levels of the trail. A cell's two seeds are
+averaged; a range is over the cells.
+
+| cells | of the variables held | of the decisions | of the first ten levels |
+|---|---|---|---|
+| pyramid with a model, 10 | 0.8 to 1.7% | 13 to 34% | 26 to 65% |
+| pyramid refuted, 2 | 0.8, 1.5% | 17, 7% | 35, 22% |
+| lockchart group 1, 4 | 0.5% | 6 to 8% | 65 to 81% |
+| lockchart groups 2 and 3, 8 | 6.4 to 9.7% | 30 to 41% | 52 to 64% |
+| oisc, 4 | 0.3 to 0.4% | 8 to 16% | 3 to 13% |
+| `et-512` | 65% | 93% | 97% |
+| `oddball-tto` | 65% | 98% | 95% |
+| `hcp-446` | 60% | 89% | 87% |
+| `planning-pathways17` | 44% | 69% | 73% |
+| `em-8-4-5` | 37% | 68% | 95% |
+| `vmpc-28` | 24% | 97% | 98% |
+| `sted2-219` | 20% | 71% | 68% |
+| `break-16-70` | 20% | 75% | 88% |
+| `sudoku-N30-16` | 11% | 69% | 59% |
+| `timetable-496` | 11% | 73% | 73% |
+| `itc2021-late10` | 8% | 68% | 92% |
+| `reconf-queen20` | 7% | 40% | 91% |
+| `dislog-a14` | 5% | 50% | 84% |
+| `case6` | 56% | 14% | 8% |
+
+- **Lockchart group 1** (2 million variables, 0.5% of them choices): only 6
+  to 8% of all decisions are on a choice, yet 65 to 81% of the decisions in
+  the first ten levels are. The mass of decisions is deep in the trail, on
+  helpers.
+- **oisc** is the one family where the top of the trail is not the choices:
+  3 to 13% of the first ten levels. Of the control word itself: 71 to 314
+  decisions a run, 0.01 to 0.05% of all. At a sampled conflict 2.7 to 9.7 of
+  its 8 to 15 bits are set, 8% of them by a decision.
+- **`case6`** (600 variables): 80% of the decisions are on variables the
+  solver made itself, 17% of what it holds.
+
+**The pyramid by role**, ten cells with a model, mean over the 20 runs (lowest
+to highest run):
+
+| role | of the variables held | of the decisions, own | counting the variables it stands for | of the first ten levels | tried true |
+|---|---|---|---|---|---|
+| label bits (`number`) | 0.8% (0.6 to 1.2) | 19% (12 to 35) | 21% (13 to 37) | 43% (24 to 68) | 52% (48 to 57) |
+| placements | 0 | 0 | 47% (38 to 54) | 26% (21 to 35) | 12% (9 to 17) |
+| other tests on numbers | 4.1% (2.9 to 5.1) | 17% (3 to 30) | 37% (23 to 50) | 70% (42 to 85) | 85% (77 to 95) |
+| two-way definitions (`def`) | 47% (37 to 94) | 46% (39 to 54) | 49% (42 to 54) | 30% (20 to 40) | 87% (80 to 90) |
+| the solver's own (`new`) | 42% (0 to 53) | 15% (7 to 38) | 48% (25 to 63) | 75% (43 to 87) | 71% (50 to 79) |
+
+- The "stands for" columns overlap: a variable can stand for a label bit and
+  for one of the solver's own at once, so they add up to more than 100%. The
+  solver's `factor` step makes variables that turn out equal to label bits
+  and to tests on them, which is why its own variables stand in so many
+  decisions near the top.
+- A placement lives on as the *opposite* of a definition variable: the
+  solver sets that variable true in 87% of its decisions on it, which is the
+  placement false, "this cube is not here".
+- Decisions a conflict: 7.9 in focused mode, 1.3 in stable mode
+  (propagations a conflict: 3,600 and 890).
+
+**What became of the pyramid's variables**, the ten cells with a model, in
+percent of the role's variables (mean over the runs):
+
+| role | at | held | fixed | eliminated | replaced, held | replaced, fixed | replaced, gone |
+|---|---|---|---|---|---|---|---|
+| placements | the first decision | 0 | 23 | 0 | 77 | 0 | 0 |
+| | 1,000 conflicts | 0 | 23 | 0 | 62 | 16 | 0 |
+| | the end | 0 | 23 | 0 | 50 | 26 | 1 |
+| label bits | the first decision | 99 | 0 | 0 | 0 | 0 | 0 |
+| | 1,000 conflicts | 93 | 7 | 0 | 0 | 0 | 0 |
+| | the end | 45 | 13 | 33 | 4 | 0 | 3 |
+
+- **Lockchart** keeps its choices: all are held under their own number for
+  the first 100,000 conflicts, and 96% after a million (the rest are
+  eliminated). Its helpers go sooner: 15% are eliminated after 100,000
+  conflicts and 35% after a million.
+- **oisc, the control word.** On the three `and` cells one of its bits is
+  fixed before the first decision and a second within 10,000 conflicts. At
+  the end of the run 4, 5 and 8 of its 11, 12 and 15 bits are replaced by an
+  equal variable (4, 4 and 8 already after 10,000 conflicts), and 5 are held
+  under their own number. A hook that goes by a variable's own number, as
+  `--ctlfirst` does, would find 5 or 6 of them after 10,000 conflicts of
+  these runs.
+
+### Caveats
+
+- **The roles are the reading's.** `free` is "no role fits", which covers
+  real inputs and choices the reader did not recognise. The table groups it
+  with the choices because both are variables nothing computes.
+- **Two seeds, one budget.** A cell's two seeds differ by 0.7 points of the
+  decisions' share in the middle and by 7 at most, so the ranges above are
+  between cells. But a run of 30G is about half of a usual run, and the late
+  part of a long run is not in it.
+- **The walk and the split were off**, so the lockchart and oisc numbers are
+  of a search the shipped solver mostly does not run on those cells.
+- **Shares, not causes.** That the solver decides on the choices says
+  nothing on whether more of it would help. The one test of "more" so far is
+  `d96.14.2`: label bits strictly first, 0 models in 40 runs against 19.
+- **oisc has few trail samples** (3 to 39 a run on the three large cells):
+  with a trail of millions of variables a sample is taken every few thousand
+  conflicts.
+
+### Review
+
+Codex, ten rounds (`log/decision-roles-2026-11-22/review-round*.txt`), the
+last two without a finding ("No actionable bugs found", "No actionable
+defects were found"). No round found a fault in the solver's answers; the
+search is untouched by construction and held to that by the tests. What they
+found, all fixed with a test each:
+
+- round 1, four faults in what was counted: the last conflicts of a run that
+  ends in stable mode went to focused mode; a variable eliminated while equal
+  to another was not followed; the solver's own variables took the file's
+  roles when the file declared unused variables; the report tool failed on a
+  run without a decision. The measurement was made after this round.
+- rounds 2, 3: the role file is an input and was not protected like the
+  solver's other inputs (a role file named as the proof, as the policy's log,
+  as the card reader's check file, or among the wrapper's output files); the
+  saved lines could be read from the signal handler while they grew.
+- rounds 3, 7: two more ways a helper variable of a structure pass could
+  take a declared and unused number. The bound is now kept from the clauses
+  themselves, not from the solver's tables.
+- rounds 4, 5: the report tool compared counts of the whole run with a
+  variable total of one moment; averaged a role only over the runs that had
+  it; and its same-search check would have passed a pair of runs that never
+  counted.
+- round 6: a conflict found while the formula is loaded was in no mode.
+- round 8: the status report walked a long chain of replacements once for
+  every variable (19 s where the run takes 0.1 s); a formula read in the
+  relaxed mode was refused.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

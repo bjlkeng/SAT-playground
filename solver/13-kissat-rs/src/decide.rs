@@ -252,6 +252,10 @@ pub fn decide(solver: &mut Solver) {
     debug_assert!(solver.level != crate::internal::INVALID_LEVEL);
     let idx = next_decision_variable(solver);
     let value = decide_phase(solver, idx);
+    // Not in kissat: the decision counted by role (src/roles.rs; off by default)
+    if solver.roles.on && !solver.warming {
+        crate::roles::decided(solver, idx, value);
+    }
     let mut l = lit(idx);
     if value < 0 {
         l = not(l);

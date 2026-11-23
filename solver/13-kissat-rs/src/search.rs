@@ -162,6 +162,11 @@ fn stop_search(solver: &mut Solver) {
     // asked again (src/assume.rs); `stable` is cleared just below
     solver.assume.stable = solver.stable;
 
+    // Not in kissat: the conflicts so far go to the mode the search ends in,
+    // which is cleared just below (src/roles.rs; off by default)
+    if solver.roles.on {
+        crate::roles::switching(solver);
+    }
     if solver.stable {
         crate::report::report(solver, false, ']'); // REPORT (0, ']')
         crate::profile::stop_checked(solver, Prof::stable); // STOP (stable)

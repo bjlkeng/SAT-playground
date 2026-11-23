@@ -354,6 +354,7 @@ pub struct Solver {
     pub card: crate::card::State, // not in kissat: the card engine (src/card.rs)
     pub freewalk: crate::freewalk::FreeWalk, // not in kissat: the free-choice walk (src/freewalk.rs)
     pub control: crate::control::Control, // not in kissat: control words (src/control.rs)
+    pub roles: crate::roles::Roles, // not in kissat: decisions counted by role (src/roles.rs)
     pub assume: crate::assume::Assume, // not in kissat: solving under assumptions (src/assume.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
@@ -587,6 +588,8 @@ pub fn print_statistics(solver: &mut Solver) {
     crate::freewalk::report(solver);
     // Not in kissat: the control decisions' exit line; nothing when off
     crate::control::report(solver);
+    // Not in kissat: the decisions counted by role; nothing when off
+    crate::roles::report(solver, crate::application::caught_signal());
     // Not in kissat: the assumption solves' exit line; nothing without one
     crate::assume::report(solver);
 }
@@ -598,6 +601,11 @@ pub fn print_statistics(solver: &mut Solver) {
 /// compiled in and used for proof deletion of shrunken/satisfied originals.
 pub fn add(solver: &mut Solver, elit: i32) {
     debug_assert!(solver.statistics.searches == 0, "incremental solving not supported");
+    // Not in kissat: the largest variable given to the solver before the
+    // search, for the count by role (src/roles.rs; off by default)
+    if solver.roles.tracking {
+        crate::roles::added(solver, elit);
+    }
     let proving = solver.proof.is_some();
     if elit != 0 {
         debug_assert!(

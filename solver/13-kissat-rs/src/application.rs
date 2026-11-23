@@ -162,6 +162,12 @@ static SAVED_ALARM_HANDLER: AtomicUsize = AtomicUsize::new(0);
 // static volatile bool ignore_alarm = false; (main.c)
 static IGNORE_ALARM: AtomicBool = AtomicBool::new(false);
 
+/// Not in kissat: a signal has been caught, so the statistics are being
+/// printed from its handler (src/roles.rs then reads nothing of the solver).
+pub fn caught_signal() -> bool {
+    CAUGHT_SIGNAL.load(Ordering::SeqCst) != 0
+}
+
 // kissat_signal_handler (main.c): print, dump statistics, re-raise.
 fn signal_handler(sig: i32) {
     let ptr = SOLVER.load(Ordering::SeqCst) as *mut Solver;
@@ -1134,6 +1140,19 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     for name in &sidecar_names {
         taken.push(("structure sidecar", name.as_str()));
     }
+    // Not in kissat: the role file of the count by role (src/roles.rs) is
+    // read here, before this run opens any file to write, and may be none of
+    // the run's own files; nothing with rolecount off
+    let role_path: Option<String> = match crate::roles::reserve(solver, &taken) {
+        Ok(path) => path,
+        Err(text) => {
+            crate::error::error(format_args!("{}", text));
+            return 1;
+        }
+    };
+    if let Some(p) = role_path.as_deref() {
+        taken.push(("role", p));
+    }
     if let Err(text) = crate::policy::init_from_env(solver, &taken) {
         crate::error::error(format_args!("{}", text));
         return 1;
@@ -1156,7 +1175,8 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     }
     {
         // not in kissat: the structure pass, with the files the artifacts may not alias
-        let owned: Vec<(&str, String)> = [("input", &app.input_path), ("proof", &app.proof_path), ("output", &app.output_path)]
+        // (the role file of the count by role among them: an input of this run)
+        let owned: Vec<(&str, String)> = [("input", &app.input_path), ("proof", &app.proof_path), ("output", &app.output_path), ("role", &role_path)]
             .iter()
             .filter_map(|(what, p)| p.as_ref().map(|p| (*what, p.clone())))
             .collect();
@@ -1172,6 +1192,12 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     print_limits(solver, &app);
     crate::policy::print_configuration(solver); // not in kissat; silent when off
     crate::control::install(solver); // not in kissat; nothing with ctlfirst off
+    // not in kissat: the roles for the count of decisions by role; nothing with rolecount off
+    if let Err(text) = crate::roles::install(solver, app.max_var) {
+        crate::error::error(format_args!("{}", text));
+        close_proof(solver, &mut app);
+        return 1;
+    }
     crate::print::section(solver, "solving");
     // not in kissat: the control split (src/control.rs); 0 with ctlsplit off
     let split = crate::control::split(solver);

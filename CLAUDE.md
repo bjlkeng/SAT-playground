@@ -172,6 +172,40 @@ work is **solver 13** and the RL scheduler on top of it.
   conflicts), and `--ctlfirst` skips a replaced variable, so a list of
   placements made no decision at all. Count what the solver decides on and
   what it keeps (`d96.14.1`) before building.
+  G.17.1, what the solver decides on, by role (2026-11-22; bead `d96.14.1`;
+  solver README, "What the solver decides on, by role"). A counter in the
+  solver, off by default and with no effect on the search (`--rolecount=1`,
+  the roles from the file named by `SAT_ROLE_FILE`; `src/roles.rs`;
+  `tools/role_file.py` writes the file from the free-choice reading,
+  `tools/role_count.py` makes the tables and the same-search check;
+  `benchmarks/rl/decision_roles_2025.tsv` and `..._hold.tsv`). It counts the
+  decisions by the role of the decided variable, the value they try, what
+  stands on the trail, and what became of each role's variables, and it
+  follows a variable the solver replaces by an equal one. On 42 cells, two
+  seeds, 30G of work, the walk and the split off (the same search with the
+  count on, 42 of 42 cells): **the solver already decides on the variables
+  that nothing computes** (the reading's choices, free variables, bits of
+  numbers): their share of the decisions is above their share of the
+  variables on 41 of 42 cells. Pyramid label bits are 0.8% of what the solver
+  holds and get 19% of the decisions and 43% of those in the first ten levels;
+  lockchart choices of groups 2 and 3 are 6 to 10% and get 30 to 41%. The
+  exception by family is oisc: the control word gets 71 to 314 of a million
+  decisions (the split, on by default, does the guiding there). **What is
+  left for a hook is the value and the renaming.** A decision on a member of
+  an exactly-one group mostly says "not this one" (12% of the decisions on a
+  pyramid placement try true, 4 to 16% on the choices of vmpc, oddball, ET and
+  timetable). And a list of variable numbers goes stale: no pyramid placement
+  is held under its own number even at the first decision, a third of the
+  label bits are eliminated by the end of a run, and 4 to 8 of an oisc control
+  word's 11 to 15 bits are replaced by an equal variable. On the size-4
+  pyramid cells 42 to 53% of the variables the solver holds are ones it made
+  itself (`factor`); they take 15% of the decisions, and 80% on `case6`.
+  **Before building a hook for a family, run this count on it** (a role file
+  takes seconds to minutes, a run is the usual run), and try a value
+  preference first with the switch that exists (`--forcephase=1` with
+  `--phase`). The role file is an input: the solver reads it before it opens
+  any file to write and refuses one that is a file of its own; `run.sh` with
+  an output directory does not run with a role file named.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode

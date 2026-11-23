@@ -562,6 +562,11 @@ pub fn analyze(solver: &mut Solver, conflict: Conflict) -> i32 {
     }
 
     profile::start_checked(solver, Prof::analyze); // START (analyze)
+    // Not in kissat: what stands on the trail at a conflict of the search,
+    // counted by role (src/roles.rs; off by default)
+    if solver.roles.on && !solver.probing {
+        crate::roles::conflicting(solver);
+    }
     if !solver.probing {
         update_trail_average(solver);
         update_decision_rate_average(solver);

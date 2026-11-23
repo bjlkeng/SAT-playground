@@ -311,6 +311,10 @@ fn remove_representative_equivalences(
             }
 
             solver.statistics.substituted += 1; // INC (substituted)
+            // Not in kissat: the replacement noted for the count by role (src/roles.rs; off by default)
+            if solver.roles.on {
+                crate::roles::merged(solver, idx, other);
+            }
             crate::flags::mark_eliminated_variable(solver, idx);
             let other_value = solver.values[other as usize];
             if incremental || other_value != 0 {

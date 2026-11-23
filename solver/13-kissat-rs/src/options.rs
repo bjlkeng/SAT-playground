@@ -340,6 +340,11 @@ kissat_options! {
     (restartint, RESTARTINT_DEFAULT, 1, 10_000, "base restart interval"),
     (restartmargin, 10, 0, 25, "fast/slow margin in percent"),
     (restartreusetrail, 1, 0, 1, "restarts tries to reuse trail"),
+    // Not in kissat (bead SAT-playground-d96.14.1, src/roles.rs): count what
+    // the search decides on, by the role a reading gives each variable
+    // (the file named by SAT_ROLE_FILE).  It only reads the solver: the
+    // search is the same with it on.
+    (rolecount, 0, 0, 1, "count decisions by role (SAT_ROLE_FILE)"),
     (seed, 0, 0, i32::MAX, "random seed"),
     (shrink, 3, 0, 3, "learned clauses (1=bin,2=lrg,3=rec)"),
     (simplify, 1, 0, 1, "enable probing and elimination"),
@@ -911,9 +916,9 @@ mod tests {
         // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
-        // assumptions), structdivassume (2026-11-18), and structnum,
-        // structnumticks (2026-11-19)
-        assert_eq!(OPTION_TABLE.len(), 158 + 76);
+        // assumptions), structdivassume (2026-11-18), structnum,
+        // structnumticks (2026-11-19), and rolecount (2026-11-22)
+        assert_eq!(OPTION_TABLE.len(), 158 + 77);
     }
 
     #[test]
