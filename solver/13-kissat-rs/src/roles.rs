@@ -48,6 +48,16 @@
 //! one test of a flag at each call site, and the environment is never read.
 //! The output is kept in memory and printed with the statistics at the end.
 //!
+//! The solver's own reading (`roleread`, bead SAT-playground-d96.14.6).  The
+//! roles can come from the free-choice reading the solver does before the
+//! search (src/freeread.rs) in place of a file: `choice` (a member of a
+//! pick-one group), `free` (nothing computes it), `def`, `gate` and `helper`
+//! (computed from others).  A variable the reading fixed, or one in no
+//! clause, is `unlisted`.  No role file and no environment variable is read
+//! then.  A formula the reading does not read (too large, out of its work
+//! limit, refuted while it is read) has no roles: nothing is counted and
+//! nothing is preferred.
+//!
 //! The role file is an input of the run.  It is read before the run opens
 //! any file to write (`reserve`), and a role file that is one of the run's
 //! own files (the formula, the proof, an output file, the policy's log) is
@@ -150,6 +160,10 @@ pub struct Roles {
     path: String,
     /// The role file's text, read by `reserve` and used up by `install`.
     text: Option<String>,
+    /// With `roleread`: the roles of the solver's own reading by DIMACS
+    /// variable (the constants of src/freeread.rs), from the structure stage
+    /// to `install`.  None when the formula was not read.
+    reading: Option<Vec<u8>>,
     /// The exit lines have been printed (or are being printed).
     reported: bool,
     /// Role names; a role is its index here.
@@ -285,6 +299,11 @@ pub fn reserve(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<Option<Str
     if solver.options.rolecount == 0 && solver.options.guide == 0 {
         return Ok(None);
     }
+    if solver.options.roleread != 0 {
+        // the roles come from the solver's own reading: no file is named or read
+        solver.roles.tracking = true;
+        return Ok(None);
+    }
     let path = match std::env::var("SAT_ROLE_FILE") {
         Ok(p) if !p.trim().is_empty() => p,
         _ => {
@@ -331,22 +350,68 @@ pub fn added(solver: &mut Solver, elit: i32) {
     }
 }
 
-/// Take the roles from the text `reserve` read, after the formula is in the
-/// solver.  `max_var` is the formula's variable count.  An error is a role
-/// file that cannot be used: the run must not go on as if it counted.
+/// The roles are wanted from the solver's own reading: `roleread`, for the
+/// count or for the nudges.
+#[inline]
+pub fn wants_reading(solver: &Solver) -> bool {
+    solver.options.roleread != 0 && (solver.options.rolecount != 0 || solver.options.guide != 0)
+}
+
+/// The free-choice reading's roles by DIMACS variable, handed over by the
+/// structure stage (the reading's own table, not a copy).
+pub fn take_reading(solver: &mut Solver, role: Vec<u8>) {
+    solver.roles.reading = Some(role);
+}
+
+/// The names and roles of a reading: (role names, the role of each variable
+/// from 0 to `original`, how many variables have one).
+fn reading_roles(read: &[u8], original: usize) -> (Vec<String>, Vec<u8>, usize) {
+    let names: Vec<String> = ["unlisted", "new", "choice", "free", "def", "gate", "helper"].iter().map(|x| x.to_string()).collect();
+    let mut role: Vec<u8> = vec![UNLISTED as u8; original + 1];
+    let mut listed = 0usize;
+    for v in 1..=original.min(read.len().saturating_sub(1)) {
+        let id = match read[v] {
+            crate::freeread::CHOICE => 2u8,
+            crate::freeread::FREE => 3,
+            crate::freeread::DEF => 4,
+            crate::freeread::GATE => 5,
+            crate::freeread::HELPER => 6,
+            _ => continue, // fixed by the formula's units, or in no clause
+        };
+        role[v] = id;
+        listed += 1;
+    }
+    (names, role, listed)
+}
+
+/// Take the roles from the text `reserve` read, or with `roleread` from the
+/// solver's own reading, after the formula is in the solver.  `max_var` is
+/// the formula's variable count.  An error is a role file that cannot be
+/// used: the run must not go on as if it counted.  A formula without a
+/// reading is no error: it has no roles, and nothing is counted or nudged.
 pub fn install(solver: &mut Solver, max_var: i32) -> Result<(), String> {
     if solver.options.rolecount == 0 && solver.options.guide == 0 {
         return Ok(());
     }
-    let Some(text) = solver.roles.text.take() else {
-        return Err("rolecount or guide is on but no role file was read".to_string());
-    };
-    let path = std::mem::take(&mut solver.roles.path);
     // the formula's variables: its declared count, or more when the relaxed
     // parser took a variable past it
     let original = (max_var.max(0) as usize).max(solver.roles.used);
-    let (names, mut role, listed) = parse_roles(&text, original).map_err(|e| format!("role file '{}': {}", path, e))?;
-    drop(text);
+    let (names, mut role, listed, path) = if solver.options.roleread != 0 {
+        let Some(read) = solver.roles.reading.take() else {
+            solver.roles.tracking = false;
+            crate::print::message(solver, "roles: the formula has no free-choice reading, so no roles".to_string());
+            return Ok(());
+        };
+        let (names, role, listed) = reading_roles(&read, original);
+        (names, role, listed, "reading".to_string())
+    } else {
+        let Some(text) = solver.roles.text.take() else {
+            return Err("rolecount or guide is on but no role file was read".to_string());
+        };
+        let path = std::mem::take(&mut solver.roles.path);
+        let (names, role, listed) = parse_roles(&text, original).map_err(|e| format!("role file '{}': {}", path, e))?;
+        (names, role, listed, path)
+    };
     // A variable of the solver's own can have a number that the formula
     // declares and never uses, in two ways.  A structure pass numbers its
     // helper variables from the formula's last used variable on: the numbers
@@ -442,6 +507,24 @@ pub fn masks(solver: &Solver, e: usize) -> (u32, u32) {
 /// How many DIMACS variables the roles know.
 pub fn known(solver: &Solver) -> usize {
     solver.roles.role.len()
+}
+
+/// How many DIMACS variables have each role as their own, by role id, for
+/// src/guide.rs.
+pub fn census(solver: &Solver) -> Vec<u64> {
+    let mut n = vec![0u64; solver.roles.names.len()];
+    for &r in solver.roles.role.iter().skip(1) {
+        n[r as usize] += 1;
+    }
+    n
+}
+
+/// The nudges do not run after all: replacements are followed on only when
+/// the count needs them.
+pub fn unfollow(solver: &mut Solver) {
+    if !solver.roles.on {
+        solver.roles.follow = false;
+    }
 }
 
 /// The role of an internal variable and the roles it stands for, as itself

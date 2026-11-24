@@ -51,6 +51,19 @@
 //! the kept variable then stands for the replaced one, with the value
 //! turned round when the two are opposites.
 //!
+//! With `roleread` (bead SAT-playground-d96.14.6) the solver makes the list
+//! itself: the roles are those of its own free-choice reading, and the
+//! preferred variables are the reading's choices and free variables and
+//! every variable that is not in the formula (the structure passes' and the
+//! solver's own, the role `new`).  What is left is the formula's
+//! bookkeeping: definitions, gates and helpers.  The experiments of bead
+//! d96.14.9 found that a lean must not lower the solver's own variables, so
+//! they are always among the preferred here.  No role file and no
+//! environment variable is read.  The nudges stay off, and the search is the
+//! plain one, when the formula has no reading or when there is nothing to
+//! tell apart: no real unknown, or no bookkeeping.  The exit line then says
+//! `c guide off reason=...`.
+//!
 //! None of this can make an answer wrong: a decision, its value, the order
 //! of a queue and a start of the local search are free choices of the
 //! solver, and a variable that is kept is one elimination not done.  With
@@ -153,6 +166,12 @@ pub struct Guide {
     pub first: u8,
     /// Where the warm-up's walk through the list stands.
     warm_cursor: usize,
+    /// With `roleread`: why the nudges do not run ("" when they do, or when
+    /// the roles come from a file).
+    why_off: &'static str,
+    /// With `roleread`: the reading's variables by role: choice, free, def,
+    /// gate, helper.
+    read: Option<[u64; 5]>,
     pub n: Counts,
 }
 
@@ -215,8 +234,34 @@ pub fn install(solver: &mut Solver) -> Result<(), String> {
     if solver.options.guide == 0 {
         return Ok(());
     }
+    // `roleread`: the roles are the solver's own reading's, and the
+    // preferred ones are fixed; the environment is not read
+    let read = solver.options.roleread != 0;
     if !solver.roles.follow {
+        if read {
+            solver.guide.why_off = "unread";
+            return Ok(());
+        }
         return Err("guide is on but no roles were read".to_string());
+    }
+    if read {
+        let n = crate::roles::census(solver);
+        let of = |name: &str| crate::roles::role_id(solver, name).map_or(0, |id| n[id]);
+        let counts = [of("choice"), of("free"), of("def"), of("gate"), of("helper")];
+        solver.guide.read = Some(counts);
+        // nothing to tell apart: the search stays the plain one
+        let why = if counts[0] + counts[1] == 0 {
+            "no-unknowns"
+        } else if counts[2] + counts[3] + counts[4] == 0 {
+            "no-bookkeeping"
+        } else {
+            ""
+        };
+        if !why.is_empty() {
+            solver.guide.why_off = why;
+            crate::roles::unfollow(solver);
+            return Ok(());
+        }
     }
     let mut missing: Vec<String> = Vec::new();
     let mut mask_of = |solver: &Solver, names: &[String]| -> u32 {
@@ -229,8 +274,11 @@ pub fn install(solver: &mut Solver) -> Result<(), String> {
         }
         mask
     };
-    let var_names = names_of("SAT_GUIDE_ROLES", "choice,number,free,control");
-    let value_names = names_of("SAT_GUIDE_VALUE_ROLES", "choice");
+    let (var_names, value_names) = if read {
+        (vec!["choice".to_string(), "free".to_string(), "new".to_string()], vec!["choice".to_string()])
+    } else {
+        (names_of("SAT_GUIDE_ROLES", "choice,number,free,control"), names_of("SAT_GUIDE_VALUE_ROLES", "choice"))
+    };
     let var_mask = mask_of(solver, &var_names);
     let value_mask = mask_of(solver, &value_names);
     let o = &solver.options;
@@ -603,10 +651,19 @@ pub fn value(solver: &mut Solver, idx: u32, value: i32) -> i32 {
     res
 }
 
-/// The exit line; nothing when the nudges are off.
+/// The exit line; nothing when the nudges are off.  With `roleread` it
+/// ends with the reading's variables by role, and a run whose nudges stayed
+/// off says why.
 pub fn report(solver: &Solver) {
     let g = &solver.guide;
+    let read = match g.read {
+        Some([choice, free, def, gate, helper]) => format!(" read=1 choice={} free={} def={} gate={} helper={}", choice, free, def, gate, helper),
+        None => String::new(),
+    };
     if !g.on {
+        if !g.why_off.is_empty() {
+            println!("c guide off reason={}{}", g.why_off, read);
+        }
         return;
     }
     let o = &solver.options;
@@ -614,7 +671,7 @@ pub fn report(solver: &Solver) {
     println!(
         "c guide list={} bump={} front={} window={} restart={} phase={} share={} randec={} warm={} walk={} init={} protect={} cause={} \
          bumped={} fronted={} by_window={} by_restart={} by_random={} random_missed={} by_warm={} valued={} turned={} walk_weighted={} \
-         started={} first={} credited={} reasons={} looked={}",
+         started={} first={} credited={} reasons={} looked={}{}",
         g.list.len(),
         o.guidebump,
         o.guidefront,
@@ -646,6 +703,7 @@ pub fn report(solver: &Solver) {
         },
         c.credited,
         c.reasons,
-        c.looked
+        c.looked,
+        read
     );
 }

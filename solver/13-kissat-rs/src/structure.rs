@@ -97,12 +97,13 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.structnum != 0 || o.freeread != 0 || o.freewalk != 0
+    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.structnum != 0 || o.freeread != 0 || o.freewalk != 0 || crate::roles::wants_reading(solver)
 }
 
-/// The free-choice reading runs (for its report or for the walk).
+/// The free-choice reading runs (for its report, for the walk, or for the
+/// roles of src/roles.rs with `roleread`).
 fn reading_on(solver: &Solver) -> bool {
-    solver.options.freeread != 0 || solver.options.freewalk != 0
+    solver.options.freeread != 0 || solver.options.freewalk != 0 || crate::roles::wants_reading(solver)
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -695,21 +696,38 @@ fn free_choices(solver: &mut Solver, formula: &Formula, lits: &[i32], refuted: b
             Err(crate::freeread::NotRead::Budget) => println!("c freeread status=budget work={} ms={}", work, ms),
         }
     }
-    if solver.options.freewalk == 0 {
+    // not in kissat: with `roleread` the reading's roles go to src/roles.rs
+    let roles = crate::roles::wants_reading(solver);
+    let walk = solver.options.freewalk != 0;
+    if !walk && !roles {
         return;
     }
     match outcome {
-        Ok(r) => {
-            // built within what is left of the reading's limit
-            crate::freewalk::build(solver, &r, own, stop_ref);
+        Ok(mut r) => {
+            if walk {
+                // built within what is left of the reading's limit
+                crate::freewalk::build(solver, &r, own, stop_ref);
+            }
+            if roles {
+                // the reading's own table is handed over: no copy, no work
+                crate::roles::take_reading(solver, std::mem::take(&mut r.role));
+            }
             drop(r);
             if solver.options.freewalk == 1 && solver.freewalk.walk.is_some() {
                 let budget = cap((solver.options.freewalkticks as u64).saturating_mul(1000), solver);
                 crate::freewalk::first(solver, budget, lits);
             }
         }
-        Err(crate::freeread::NotRead::Refuted) => crate::freewalk::unread(solver, "refuted"),
-        Err(crate::freeread::NotRead::Budget) => crate::freewalk::unread(solver, "budget"),
+        Err(crate::freeread::NotRead::Refuted) => {
+            if walk {
+                crate::freewalk::unread(solver, "refuted");
+            }
+        }
+        Err(crate::freeread::NotRead::Budget) => {
+            if walk {
+                crate::freewalk::unread(solver, "budget");
+            }
+        }
     }
 }
 

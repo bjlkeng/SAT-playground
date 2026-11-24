@@ -362,6 +362,14 @@ kissat_options! {
     // (the file named by SAT_ROLE_FILE).  It only reads the solver: the
     // search is the same with it on.
     (rolecount, 0, 0, 1, "count decisions by role (SAT_ROLE_FILE)"),
+    // Not in kissat (2026-11-24, bead SAT-playground-d96.14.6): the roles
+    // come from the solver's own free-choice reading (src/freeread.rs), not
+    // from a role file: `choice`, `free`, `def`, `gate`, `helper`.  For the
+    // count by role, and for the nudges of src/guide.rs, which then prefer
+    // `choice`, `free` and the solver's own variables.  It does nothing
+    // without `rolecount` or `guide`, and with it no role file and no
+    // environment variable is read.
+    (roleread, 0, 0, 1, "roles from the solver's own free-choice reading (no role file)"),
     (seed, 0, 0, i32::MAX, "random seed"),
     (shrink, 3, 0, 3, "learned clauses (1=bin,2=lrg,3=rec)"),
     (simplify, 1, 0, 1, "enable probing and elimination"),
@@ -934,9 +942,10 @@ mod tests {
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
         // assumptions), structdivassume (2026-11-18), structnum,
-        // structnumticks (2026-11-19), rolecount (2026-11-22), and the
-        // thirteen guide* options (2026-11-23, an experiment)
-        assert_eq!(OPTION_TABLE.len(), 158 + 90);
+        // structnumticks (2026-11-19), rolecount (2026-11-22), the
+        // thirteen guide* options (2026-11-23, an experiment), and roleread
+        // (2026-11-24)
+        assert_eq!(OPTION_TABLE.len(), 158 + 91);
     }
 
     #[test]

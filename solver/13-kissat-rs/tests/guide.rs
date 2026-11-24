@@ -5,6 +5,12 @@
 //! satisfies the formula, the preferred value is the value tried (also
 //! through a replacement by an opposite variable), a kept variable is not
 //! eliminated, and a setting that cannot be used stops the run.
+//! And the roles from the solver's own free-choice reading (`roleread`,
+//! bead SAT-playground-d96.14.6): alone it changes nothing; with the nudges
+//! and no dial the search is the old one; the reading's counts are the
+//! roles, its choices and free variables the preferred ones; with nothing to
+//! tell apart, or no reading, the nudges stay off and say why; and the count
+//! by role takes the reading's roles, with no role file read.
 
 mod common;
 
@@ -426,4 +432,269 @@ fn a_setting_that_cannot_be_used_stops_the_run() {
     let other = run(&cnf, &["--guide=1", "--guiderestart=1"], &env_of(&roles, "pick,nosuch", "pick"));
     assert!(other.exit_code == 10 || other.exit_code == 20, "{}", other.exit_code);
     assert!(other.stdout.contains("not in the role file: nosuch"), "{}", other.stdout);
+}
+
+// ---------------------------------------------------------------------------
+// the roles from the solver's own reading (`roleread`, bead d96.14.6)
+// ---------------------------------------------------------------------------
+
+/// A formula of the shape the free-choice reading reads: `groups` pick-one
+/// groups of `size` variables (a clause and a binary clause for each pair);
+/// `defs` variables, each the AND of two members of two different groups;
+/// `ccons` random clauses over members of three different groups; and
+/// `dcons` clauses over three of the AND variables with at least two
+/// negative literals.  No member implies a member of another group and no
+/// AND variable is ever implied true by binary clauses, so no constraint
+/// clause can be read as a group: the reading names the members `choice`
+/// and the AND variables `def`, and nothing else.  The clauses are returned.
+fn groups_and_definitions(groups: usize, size: usize, defs: usize, ccons: usize, dcons: usize, seed: u64, path: &Path) -> Vec<Vec<i64>> {
+    let mut rng = seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+    let mut next = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng >> 33) as usize
+    };
+    let member = |g: usize, j: usize| (g * size + j + 1) as i64;
+    let mut cl: Vec<Vec<i64>> = Vec::new();
+    for g in 0..groups {
+        cl.push((0..size).map(|j| member(g, j)).collect());
+        for a in 0..size {
+            for b in a + 1..size {
+                cl.push(vec![-member(g, a), -member(g, b)]);
+            }
+        }
+    }
+    let base = (groups * size) as i64;
+    for i in 0..defs {
+        let d = base + i as i64 + 1;
+        let ga = next() % groups;
+        let mut gb = next() % (groups - 1);
+        if gb >= ga {
+            gb += 1;
+        }
+        let a = member(ga, next() % size);
+        let b = member(gb, next() % size);
+        cl.extend([vec![-d, a], vec![-d, b], vec![d, -a, -b]]);
+    }
+    for _ in 0..ccons {
+        let mut gs: Vec<usize> = Vec::new();
+        while gs.len() < 3 {
+            let g = next() % groups;
+            if !gs.contains(&g) {
+                gs.push(g);
+            }
+        }
+        let mut c = Vec::new();
+        for g in gs {
+            let v = member(g, next() % size);
+            c.push(if next() % 2 == 0 { v } else { -v });
+        }
+        cl.push(c);
+    }
+    for _ in 0..dcons {
+        let mut ds: Vec<i64> = Vec::new();
+        while ds.len() < 3 {
+            let v = base + (next() % defs) as i64 + 1;
+            if !ds.contains(&v) {
+                ds.push(v);
+            }
+        }
+        let third = if next() % 2 == 0 { 1 } else { -1 };
+        cl.push(vec![-ds[0], -ds[1], third * ds[2]]);
+    }
+    let mut text = format!("p cnf {} {}\n", groups * size + defs, cl.len());
+    for c in &cl {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+    cl
+}
+
+/// The same search with the reading's work added: the status and every
+/// `-s` counter, and the work clock line apart from the total ticks and W.
+/// For the stock path, where the reading runs only for the roles.
+fn assert_same_search(a: &Run, b: &Run, what: &str) {
+    assert_eq!(a.status, b.status, "{}: status differs", what);
+    assert_eq!(a.stats, b.stats, "{}: -s counters differ", what);
+    let strip = |w: &BTreeMap<String, u64>| -> BTreeMap<String, u64> { w.iter().filter(|(k, _)| k.as_str() != "ticks" && k.as_str() != "work").map(|(k, v)| (k.clone(), *v)).collect() };
+    assert_eq!(strip(&a.workclock), strip(&b.workclock), "{}: work clock line differs", what);
+    assert!(b.workclock["ticks"] >= a.workclock["ticks"], "{}: the reading's work is added", what);
+}
+
+/// The `c freeread status=read ...` line of a run.
+fn reading_line(stdout: &str) -> Line {
+    let rest = stdout.lines().find_map(|l| l.strip_prefix("c freeread status=read ")).unwrap_or_else(|| panic!("no reading line in:\n{}", stdout));
+    pairs(rest)
+}
+
+/// The `c guide off reason=...` line of a run.
+fn off_line(stdout: &str) -> Line {
+    let rest = stdout.lines().find_map(|l| l.strip_prefix("c guide off ")).unwrap_or_else(|| panic!("no guide off line in:\n{}", stdout));
+    pairs(rest)
+}
+
+/// The two toys of shape `groups_and_definitions` that need a search: one
+/// with a model (about 8,600 conflicts on the stock path) and one without
+/// (about 6,100).
+const SHAPED: &[(&str, [usize; 5], u64)] = &[("sat", [150, 4, 500, 1050, 300], 7), ("unsat", [120, 5, 500, 1100, 300], 5)];
+
+#[test]
+fn the_read_roles_change_nothing_without_the_count_or_the_nudges() {
+    let fx = Fixture::new("roleread_alone");
+    let cnf = fx.path("r.cnf");
+    random_3sat(120, 4.6, 3, &cnf);
+    // no role file is read: the one named does not exist
+    let env = [("SAT_ROLE_FILE", "/nonexistent/roles")];
+    let plain = run(&cnf, &[], &[]);
+    let read = run(&cnf, &["--roleread=1"], &env);
+    common::assert_same_trajectory(&plain, &read, "roleread alone, stock path");
+    assert!(!read.stdout.contains("c guide") && !read.stdout.contains("c roles"), "{}", read.stdout);
+    let plain = run_shipped(&cnf, &[], &[]);
+    let read = run_shipped(&cnf, &["--roleread=1"], &env);
+    common::assert_same_trajectory(&plain, &read, "roleread alone, shipped defaults");
+    assert!(!read.stdout.contains("c guide") && !read.stdout.contains("c roles"), "{}", read.stdout);
+}
+
+#[test]
+fn the_read_lean_with_no_dial_is_the_old_search() {
+    let fx = Fixture::new("roleread_nodial");
+    let env = [("SAT_ROLE_FILE", "/nonexistent/roles")];
+    // on the shipped path the reading runs anyway (for the walk): the search
+    // is the old one to the tick; random 3-SAT is turned down by the walk's
+    // test, the shaped toys are walked, briefly
+    for (seed, ratio) in [(3u64, 4.6), (5, 4.0)] {
+        let cnf = fx.path(&format!("r{}.cnf", seed));
+        random_3sat(140, ratio, seed, &cnf);
+        let plain = run_shipped(&cnf, &[], &[]);
+        let on = run_shipped(&cnf, &["--guide=1", "--roleread=1"], &env);
+        common::assert_same_trajectory(&plain, &on, "the read lean with every dial off, shipped defaults");
+        assert_eq!(guide_line(&on.stdout)["read"], "1");
+        // on the stock path the reading runs for the roles alone: its work
+        // is added, and the search is the same
+        let plain = run(&cnf, &[], &[]);
+        let on = run(&cnf, &["--guide=1", "--roleread=1"], &env);
+        assert_same_search(&plain, &on, "the read lean with every dial off, stock path");
+    }
+    for (name, [g, s, d, cc, dc], seed) in SHAPED {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        groups_and_definitions(*g, *s, *d, *cc, *dc, *seed, &cnf);
+        let short = "--freewalkticks=100";
+        let plain = run_shipped(&cnf, &[short], &[]);
+        let on = run_shipped(&cnf, &[short, "--guide=1", "--roleread=1"], &env);
+        common::assert_same_trajectory(&plain, &on, &format!("{}: the read lean with every dial off, shipped defaults", name));
+        let plain = run(&cnf, &[], &[]);
+        let on = run(&cnf, &["--guide=1", "--roleread=1"], &env);
+        assert_same_search(&plain, &on, &format!("{}: the read lean with every dial off, stock path", name));
+    }
+}
+
+#[test]
+fn the_read_lean_prefers_the_readings_choices_and_free_variables() {
+    let fx = Fixture::new("roleread_lean");
+    let lean = ["--guide=1", "--roleread=1", "--freeread=1", "--guidebump=200", "--guidefront=1"];
+    // the shaped toys: choices and definitions, nothing free
+    for (name, [g, s, d, cc, dc], seed) in SHAPED {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        groups_and_definitions(*g, *s, *d, *cc, *dc, *seed, &cnf);
+        let plain = run(&cnf, &[], &[]);
+        assert!(plain.stats["conflicts"] > 3000, "{}: the toy needs a search ({} conflicts)", name, plain.stats["conflicts"]);
+        assert_eq!(plain.status, if *name == "sat" { "SATISFIABLE" } else { "UNSATISFIABLE" }, "{}", name);
+        let got = run(&cnf, &lean, &[]);
+        let read = reading_line(&got.stdout);
+        let line = guide_line(&got.stdout);
+        // the reading as built: every member a choice, every AND a definition
+        assert_eq!(num(&read, "group_vars"), (g * s) as u64, "{}: {:?}", name, read);
+        assert_eq!(num(&read, "defs"), *d as u64, "{}: {:?}", name, read);
+        for (role, key) in [("choice", "group_vars"), ("free", "free"), ("def", "defs"), ("gate", "gates"), ("helper", "helpers")] {
+            assert_eq!(num(&line, role), num(&read, key), "{}: {} against the reading's {}", name, role, key);
+        }
+        // preferred: the choices and the free variables (the solver has made
+        // none of its own at the start)
+        assert_eq!(num(&line, "list"), num(&line, "choice") + num(&line, "free"), "{}: {:?}", name, line);
+        let head = format!("c guide: {} preferred variables (roles choice,free,new), {} with a preferred value (roles choice)", num(&line, "list"), num(&line, "choice"));
+        assert!(got.stdout.lines().any(|l| l == head), "{}: no line '{}'", name, head);
+        assert!(num(&line, "bumped") > 0 && num(&line, "fronted") > 0, "{}: the lean did not act: {:?}", name, line);
+        assert_eq!(got.status, plain.status, "{}", name);
+        assert_eq!(got.exit_code, plain.exit_code, "{}", name);
+        if *name == "sat" {
+            assert!(model_holds(&cnf, &lean, &[]), "{}: the model does not satisfy the formula", name);
+        }
+    }
+    // random 3-SAT: the reading names free variables and helpers
+    let cnf = fx.path("r.cnf");
+    random_3sat(200, 4.0, 1, &cnf);
+    let got = run(&cnf, &lean, &[]);
+    let (read, line) = (reading_line(&got.stdout), guide_line(&got.stdout));
+    assert!(num(&read, "free") > 0 && num(&read, "helpers") > 0, "{:?}", read);
+    assert_eq!(num(&line, "free"), num(&read, "free"));
+    assert_eq!(num(&line, "helper"), num(&read, "helpers"));
+    assert_eq!(num(&line, "list"), num(&line, "free"), "{:?}", line);
+    assert_eq!(got.status, run(&cnf, &[], &[]).status);
+}
+
+#[test]
+fn the_read_lean_stays_off_when_there_is_nothing_to_tell_apart() {
+    let fx = Fixture::new("roleread_off");
+    let lean = ["--guide=1", "--roleread=1", "--guidebump=200", "--guidefront=1"];
+    // pick-one groups and clauses over them: choices only, no bookkeeping
+    let cnf = fx.path("groups.cnf");
+    groups_and_definitions(40, 4, 0, 300, 0, 1, &cnf);
+    let plain = run(&cnf, &[], &[]);
+    let got = run(&cnf, &lean, &[]);
+    let line = off_line(&got.stdout);
+    assert_eq!(line["reason"], "no-bookkeeping", "{:?}", line);
+    assert_eq!((num(&line, "choice"), num(&line, "def") + num(&line, "gate") + num(&line, "helper")), (160, 0), "{:?}", line);
+    assert!(!got.stdout.contains("c guide list="), "the nudges are off");
+    assert_same_search(&plain, &got, "no bookkeeping");
+    // every variable fixed by a unit: no real unknown
+    let cnf = fx.path("units.cnf");
+    std::fs::write(&cnf, "p cnf 3 3\n1 0\n-2 0\n3 0\n").unwrap();
+    let got = run(&cnf, &lean, &[]);
+    assert_eq!(off_line(&got.stdout)["reason"], "no-unknowns", "{}", got.stdout);
+    assert_eq!(got.status, "SATISFIABLE");
+}
+
+#[test]
+fn the_read_lean_without_a_reading_is_the_plain_search() {
+    let fx = Fixture::new("roleread_unread");
+    let lean = ["--guide=1", "--roleread=1", "--guidebump=200", "--guidefront=1"];
+    let cnf = fx.path("sat.cnf");
+    let [g, s, d, cc, dc] = SHAPED[0].1;
+    groups_and_definitions(g, s, d, cc, dc, SHAPED[0].2, &cnf);
+    // the reading out of its work limit, and the reading turned down for a
+    // formula with more clauses than it takes
+    let limits: [&[&str]; 2] = [&["--freereadticks=0"], &["--structclauses=100", "--freereadclauses=100"]];
+    for limit in limits {
+        let plain = run(&cnf, limit, &[]);
+        let mut all = limit.to_vec();
+        all.extend_from_slice(&lean);
+        let got = run(&cnf, &all, &[]);
+        assert_eq!(off_line(&got.stdout)["reason"], "unread", "{:?}: {}", limit, got.stdout);
+        assert!(got.stdout.contains("c roles: the formula has no free-choice reading, so no roles"), "{:?}: {}", limit, got.stdout);
+        assert_same_search(&plain, &got, &format!("{:?}", limit));
+    }
+}
+
+#[test]
+fn the_count_by_role_takes_the_readings_roles() {
+    let fx = Fixture::new("roleread_count");
+    let cnf = fx.path("sat.cnf");
+    let [g, s, d, cc, dc] = SHAPED[0].1;
+    groups_and_definitions(g, s, d, cc, dc, SHAPED[0].2, &cnf);
+    // no role file is read, even one that is named and does not exist
+    let env = [("SAT_ROLE_FILE", "/nonexistent/roles")];
+    let plain = run(&cnf, &[], &[]);
+    let got = run(&cnf, &["--rolecount=1", "--roleread=1"], &env);
+    assert_eq!(got.exit_code, plain.exit_code, "{}", got.stderr);
+    let file = got.stdout.lines().find_map(|l| l.strip_prefix("c roles file ")).map(pairs).unwrap_or_else(|| panic!("no roles file line in:\n{}", got.stdout));
+    assert_eq!(file["path"], "reading", "{:?}", file);
+    assert_eq!(num(&file, "listed"), (g * s + d) as u64, "{:?}", file);
+    let held = |role: &str| -> u64 {
+        role_lines(&got.stdout, "hold").iter().filter(|l| l.get("role").map(String::as_str) == Some(role)).map(|l| num(l, "vars")).next().unwrap_or(0)
+    };
+    assert_eq!((held("choice"), held("def")), ((g * s) as u64, d as u64));
+    assert!(counted(&got.stdout, "choice", "decide_own") > 0, "decisions on the choices are counted");
+    assert_same_search(&plain, &got, "the count with the reading's roles");
 }
