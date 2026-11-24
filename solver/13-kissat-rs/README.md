@@ -11657,6 +11657,381 @@ found, all fixed with a test each:
   every variable (19 s where the run takes 0.1 s); a formula read in the
   relaxed mode was refused.
 
+## Nudges toward the real unknowns: nine ways tried side by side (2026-11-23/24; bead `SAT-playground-d96.14.9`)
+
+### In plain words
+
+**The question.** The step before only watched what the solver guesses on.
+The owner asked on 2026-11-23 whether *pushing* its guesses makes it solve
+more: lean it toward the real unknowns of a problem, in several ways, over
+several seeds, and never replace its own way of choosing.
+
+A few words first. A solver works by guessing: it picks a variable, tries a
+value, and sees what follows. A *real unknown* is a variable that nothing
+else computes: one option of a pick-one choice, a bit of a stored number, an
+input. *Bookkeeping* is every other variable of the formula: it only writes
+the rules down and follows from the real unknowns. And the solver adds
+*helpers of its own* while it runs: new variables that let it write a group
+of rules shorter.
+
+**What was done.**
+
+1. Nine nudges were built, each a switch that is off by default.
+   - *Which variable to guess on:* lean the scores toward the real unknowns
+     (three strengths); credit the real unknowns behind a contradiction;
+     start them at the front; make the first guesses after each restart real
+     unknowns; forbid the solver to remove a real unknown.
+   - *Random bursts and local search:* the solver's bursts of random guesses
+     draw only from real unknowns; its local search starts from them and
+     prefers to flip them.
+   - *Which value to try:* "yes" first or "no" first, on the members of
+     pick-one choices only, or on every variable.
+2. 106 formulas of 2025 were picked: those where our reader finds real
+   unknowns that are a part of the formula and not most of it. 70 of them the
+   plain solver usually solves, 36 it rarely does.
+3. Each nudge ran against the plain solver on the same formulas, at the same
+   seeds and under the same work limit: 5,286 runs.
+4. Every solution was checked against its formula, and 119 "no solution"
+   proofs from 24 nudge settings were verified.
+5. Luck was measured. The plain solver alone solves 57 to 63 of the 70
+   usually-solved formulas from one seed to the next, so every comparison
+   below carries a range for luck.
+6. The first round was followed up: a count of where each nudge puts the
+   guesses, a test of why the score lean lost, and fresh seeds for the one
+   version that looked good.
+
+**A small example.** Four people, one window seat.
+
+| variable | meaning | kind |
+|---|---|---|
+| A, B, C, D | Ann, Bob, Cy or Dee gets the seat | real unknown |
+| T | the seat is taken | bookkeeping |
+| H | it is Ann or Bob | a helper the solver invents itself, to write "only one of them" with fewer rules |
+
+| version | top of its guess list | first guess | a "no" rules out |
+|---|---|---|---|
+| plain solver | whatever was in recent contradictions, often H | "Ann or Bob?" | two people |
+| score lean, first version | A, B, C, D; H is pushed down with T | "Ann?" | one person |
+| score lean, refined | A, B, C, D and H; only T is pushed down | "Ann or Bob?" | two people |
+
+The first version did what it was told, and that was the mistake: it treated
+the solver's own helpers as bookkeeping.
+
+**The result.** One nudge helps a little, and it is the refined score lean at
+its mildest strength. The other eight are level with the plain solver or
+worse.
+
+| nudge | solved runs, nudge against plain | reading |
+|---|---|---|
+| refined score lean, mild: all 106 formulas, all seeds | 527 against 501 of 704 (luck: +12 to +43) | a gain |
+| the same, only the seeds queued after it was picked | 261 against 252 of 352 (luck: 0 to +18) | the fair number: small, and its range touches zero |
+| score lean, first version, mild | 210 against 241 of 280 (luck: −54 to −10) | a clear loss |
+| random bursts from real unknowns | 241 against 241 of 280 | level |
+| local search on real unknowns | 243 against 241 of 280 | level |
+| real unknowns kept from removal | 240 against 241 of 280 | level |
+| first guesses after a restart | 119 against 123 of 140; its own control solves 127 | behind its control |
+| "yes" first on every variable | 84 against 123 of 140 | a third of the solves lost |
+
+**What it means.** Forcing guesses onto the real unknowns mostly hurts. The
+lesson is the other way round from what the epic assumed: the variables the
+solver invents are worth as much as the real unknowns, and the usable nudge
+is "lower the bookkeeping", not "raise the real unknowns".
+
+**Caveats.** The refined version was found by looking at the first seeds, so
+only the later seeds are a fair test. The 106 formulas were picked by hand
+rules; the other 294 are untested. The list of real unknowns came from a file
+made beforehand for each formula, which takes minutes. And the work limits
+were tight on the usually-solved formulas: eight times the plain solver's
+usual work.
+
+Nothing is on by default. The next step (bead `d96.14.6`) lets the solver
+make the list itself and runs the refined lean on all 400 formulas.
+
+### What was built
+
+One module, `src/guide.rs`, with thirteen options. `guide=1` turns it on; each
+other option is one nudge and does nothing without it. All are 0 by default,
+and with `guide=1` and no other option the search is the old one, step for
+step.
+
+| option | what it does |
+|---|---|
+| `guidebump=P` | stable mode (few restarts, scores decide): a preferred variable in a conflict gains P percent of the usual score, not 100 |
+| `guidefront=1` | focused mode (many restarts, a queue decides): the variables of a conflict go to the queue's front as always, the preferred ones last, so they end in front of the others |
+| `guidewindow=W` | focused mode: a decision takes a preferred variable when one is among the next W unassigned variables of the queue |
+| `guidecause=N` | after a conflict, the reasons of its variables are walked back, at most N reasons, and each preferred variable met is bumped too |
+| `guideinit=1` | at the first decision the preferred variables go to the queue's front and get one bump |
+| `guiderestart=K` | the first K decisions after each restart are preferred variables, the best by the mode's own order; a restart then goes back to the root |
+| `guideprotect=1` | a preferred variable is not eliminated |
+| `guiderandec=1` | the decisions of kissat's random sequences are drawn from the preferred variables |
+| `guidewarm=1` | the warm-up before a local search sets the preferred variables first |
+| `guidewalk=P` | the local search weighs a flip of a preferred variable at P percent |
+| `guidephase=1` or `2` | a decision on a variable with a preferred value tries it true (1) or false (2), in `guidephaseshare` percent of such decisions |
+
+- **Which variables.** The roles come from the role file of the step before
+  (`SAT_ROLE_FILE`, written by `tools/role_file.py`). `SAT_GUIDE_ROLES` names
+  the preferred roles (default `choice,number,free,control`), and
+  `SAT_GUIDE_VALUE_ROLES` those with a preferred value (default `choice`).
+- **The solver's own variables** have the role `new`, which
+  `SAT_GUIDE_ROLES` may name. Every run called "refined" below does.
+- **Renaming is followed.** When the solver replaces a variable by an equal
+  one, the kept variable stands for it, with the value turned round when the
+  two are opposites (the table of `src/roles.rs`).
+- **Cost.** A nudge that looks through a list pays for it on the work clock.
+- **No answer can change.** A decision, its value, the order of a queue and a
+  start of the local search are the solver's free choices, and a variable
+  kept is one elimination not done. So no proof step is added.
+- An exit line, `c guide list=... bumped=... fronted=...`, says what each
+  nudge did.
+
+### Checked first
+
+`tests/guide.rs`, 10 tests, with `cargo test` in whole (402 tests) and the
+smoke test (9 of 9):
+
+- off means off, and on with no dial is the old search, counter for counter;
+- every nudge runs and gives the plain search's answer, with a model that
+  satisfies the formula;
+- the preferred value is the value tried, also through a replacement by an
+  opposite variable;
+- the head start takes the first decisions after a restart; the first order
+  goes to the variables that are there at the first decision;
+- the solver's own variables can be preferred, also those made after the
+  start;
+- a kept variable is not eliminated;
+- a setting that cannot be used stops the run.
+
+### The runs
+
+- **Cells.** Every 2025 cell where the free-choice census
+  (`benchmarks/rl/free_2025.tsv`) finds pick-one groups (20 group variables
+  or more), where the real unknowns (group variables and free variables) are
+  0.05% to 70% of the variables left after unit propagation, and whose default
+  run is not trivial (0.25G of work or more at seed 2 or 3, or unsolved).
+  Left out: cells a structure pass decides, and one cell of four million
+  variables. The four oisc cells are added, with the control word preferred
+  and the split off. 106 cells:
+  `benchmarks/rl/guide_nudges_cells_2025.tsv`.
+- **Easy and hard.** 70 cells the default build solved at seed 2 or 3 in
+  under 26G of work (`log/abtest-as5-two-stage-400-2026-11-16-07-09-56`), 36
+  it did not. By family, easy and hard: pyramid 12 and 8, lockchart 7 and 5,
+  oddball 7 and 7, timetable 6 and 6, case 7 and 1, break 5, sudoku 3 and 2,
+  ITC2021 3 and 1, reconf 3 and 1, em 2, oisc 1 and 3, others 14 and 2.
+- **Fresh seeds.** The split used seeds 2 and 3, so those seeds would favour
+  the plain solver on the easy cells. Every run here uses seeds 4 to 11.
+- **Work limits** (`SAT_LIMIT_TICKS`), a cell: the least of 30G, the work the
+  default build does in 1,200 s (5G at least), and 8 times the most work a
+  solved reference run took (4G at least). oisc cells get 30G. A run that
+  ends at its limit is unsolved. Work PAR-2: a solved run costs its work, an unsolved one twice
+  its limit.
+- **Roles.** Pyramid cells: the reading with numbers, the label bits, free
+  variables and choices preferred, the placements with a preferred value.
+  oisc: the control word. Every other cell: the plain reading, `choice` and
+  `free` preferred, `choice` with a preferred value.
+- **The range for luck**: the cells are drawn again with replacement 2,000
+  times, a cell with all its seeds, and the range holds the middle 95% of the
+  draws (`tools/guide_report.py boot`).
+- **Host.** Xeon Gold 6154, 36 cores, 502 GB; 32 runs at a time, 16 GB each;
+  2026-11-23 11:20 to 2026-11-24 08:00. The runs end at a work limit, so the
+  load does not change them. `log/guide-nudges-2026-11-23/`: the job maker,
+  the runner, the role files and three frozen binaries (sha256
+  `acf26d0c8bb18185`, `507db97efe06942d` with `guidecause`, and
+  `28836a73b8577ce4` with the role `new`, which is the committed build).
+- **Checks.** 5,286 runs, 0 faults: every model checked against its cell, no
+  cell with both answers, no UNKNOWN before its limit
+  (`tools/guide_report.py collect`). Proofs: 119 of 119 UNSAT answers of 24
+  arms on five small cells pass the proof gate
+  (`log/guide-nudges-2026-11-23/proofs.tsv`).
+
+**Every nudge on the 70 easy cells, seeds 4 and 5** (140 runs; the plain
+solver solves 123):
+
+| nudge | options | solved | against plain (luck) | work PAR-2 |
+|---|---|---|---|---|
+| random bursts | `--guiderandec=1` | 122 | −1 (−6 to +4) | 1.015 |
+| local search | `--guidewarm=1 --guidewalk=400` | 123 | 0 (−5 to +5) | 0.946 |
+| both | | 121 | −2 (−10 to +5) | 1.015 |
+| kept from elimination | `--guideprotect=1` | 118 | −5 (−11 to 0) | 1.116 |
+| first order | `--guideinit=1` | 125 | +2 (−3 to +7) | 0.924 |
+| head start, 3 decisions | `--guiderestart=3` | 119 | −4 (−13 to +4) | 1.173 |
+| its control: restarts go back to the root | `--restartreusetrail=0` | 127 | +4 (−3 to +12) | 0.899 |
+| score lean, first version, mild | `--guidebump=200 --guidefront=1` | 105 | −18 (−30 to −7) | 1.655 |
+| middle | `--guidebump=800 --guidefront=1 --guidewindow=8` | 100 | −23 (−37 to −10) | 1.750 |
+| strong | `--guidebump=6400 --guidefront=1 --guidewindow=64` | 96 | −27 (−39 to −15) | 1.918 |
+| pick-one members "yes" first | `--guidephase=1` | 105 of 138 (plain 121) | −16 (−26 to −7) | 1.516 |
+| pick-one members "no" first | `--guidephase=2` | 111 of 138 | −10 (−18 to −3) | 1.201 |
+| every variable "yes" first | `--forcephase=1 --phase=1` | 84 | −39 (−53 to −26) | 2.017 |
+| every variable "no" first | `--forcephase=1 --phase=0` | 88 | −35 (−49 to −22) | 1.885 |
+| refined lean, mild | the mild lean, `new` preferred too | 125 | +2 (−4 to +8) | 0.944 |
+| refined lean, middle | | 119 | −4 (−10 to +1) | 1.044 |
+| refined, the score bump alone | `--guidebump=200` | 125 | +2 (−4 to +8) | 0.974 |
+| refined, the queue order alone | `--guidefront=1` | 125 | +2 (−5 to +9) | 0.880 |
+| refined, credit the cause | `--guidecause=20` | 124 | +1 (−3 to +6) | 0.912 |
+| refined lean with the local search | | 125 | +2 (−4 to +9) | 0.913 |
+
+- **The head start is behind its own control.** A restart with a head start
+  goes back to the root. That alone solves 127. With the three preferred
+  decisions on top it solves 119.
+- **Every value preference loses.** This closes the value test proposed in
+  the step before (bead `d96.14.8`): the solver's saved values are better
+  than any fixed first value, on the members of pick-one groups too.
+- **Four seeds** (4 to 7; 280 runs, the plain solver 241): local search 243
+  (+2, −7 to +11), bursts 241 (0, −8 to +9), kept from elimination 240 (−1,
+  −12 to +9), the first mild lean 210 (−31, −54 to −10; work PAR-2 1.61), the
+  refined middle lean 239 (−2, −11 to +7), the refined mild lean 254 (+13,
+  +3 to +24).
+- **The plain solver against itself**: 62, 61, 57, 61, 61, 59, 63, 61 solved
+  of 70 at seeds 4 to 11. Two seeds differ by up to 6 solved runs, with up to
+  8 cells changing sides, and by 0.87 to 1.23 in work PAR-2
+  (`guide_report.py noise`).
+
+**Why the first lean lost: it lowers the solver's own variables.** The
+counting run (15 cells, seed 4, 6G; the count by role of the step before,
+`benchmarks/rl/guide_nudges_shares_2025.tsv`) shows where the decisions go:
+
+| cell | arm | decisions on preferred variables | of the first ten levels | on the solver's own |
+|---|---|---|---|---|
+| `case16` | plain | 17% | 7% | 75% |
+| | first lean, mild | 88% | 98% | 10% |
+| | first lean, middle | 96% | 97% | 3% |
+| | refined lean, mild | 15% | 9% | 85% |
+| `bp4_CSO_IXA_ZR` | plain | 28% | 59% | 30% |
+| | first lean, mild | 65% | 97% | 13% |
+| | refined lean, mild | 37% | 68% | 41% |
+| `sudoku-N30-15` | plain | 72% | 66% | 13% |
+| | first lean, mild | 92% | 100% | 4% |
+| | refined lean, mild | 79% | 97% | 14% |
+
+The test of the explanation, on the 12 easy pyramid cells and the 7 case
+cells, seeds 4 and 5:
+
+| arm | pyramid, solved of 24 | case, solved of 14 |
+|---|---|---|
+| plain | 22 | 13 |
+| first lean, mild: label bits preferred | 8 | 7 |
+| the same, placements preferred in place of the label bits | 6 | |
+| the same, the solver's own variables preferred too (refined) | 21, at 0.90 of the work | 12 |
+| first lean, middle | 4 | 6 |
+| middle, placements preferred | 5 | |
+| middle, refined | 20, at 0.86 of the work | 10 |
+
+Which of the formula's variables are preferred matters little. Whether the
+solver's own variables are pushed down decides it. On pyramid refutations the
+first lean went from 6 to 24G of work to unsolved at 30G, at both seeds.
+
+**The refined mild lean** (`--guide=1 --guidebump=200 --guidefront=1`, the
+cell's preferred roles and `new`):
+
+| cells | seeds | runs | plain | lean | difference (luck) | work PAR-2 (luck) |
+|---|---|---|---|---|---|---|
+| 70 easy | 4 to 7, where it was picked | 280 | 241 | 254 | +13 (+3 to +24) | 0.896 (0.79 to 1.01) |
+| 70 easy | 8 to 11, queued after | 280 | 244 | 247 | +3 (−4 to +11) | 0.953 (0.85 to 1.07) |
+| 36 hard | 4 and 5, where it was picked | 72 | 8 | 12 | +4 (−1 to +9) | 0.953 (0.89 to 1.02) |
+| 36 hard | 6 and 7, queued after | 72 | 8 | 14 | +6 (0 to +12) | 0.931 (0.86 to 1.00) |
+| all 106 | all | 704 | 501 | 527 | +26 (+12 to +43) | 0.934 (0.89 to 0.98) |
+| all 106 | only those queued after | 352 | 252 | 261 | +9 (0 to +18) | 0.941 (0.88 to 1.00) |
+
+By family, the 70 easy cells over eight seeds (the work ratio is the typical
+one on the pairs both solve, with a range of two standard errors):
+
+| family | runs | plain | lean | work where both solve |
+|---|---|---|---|---|
+| pyramid | 96 | 85 | 87 | 0.82 (0.75 to 0.90) |
+| ITC2021 | 24 | 24 | 24 | 0.80 (0.64 to 1.00) |
+| reconf | 24 | 24 | 24 | 0.75 (0.48 to 1.16) |
+| em | 16 | 15 | 16 | 0.65 (0.34 to 1.24) |
+| case | 56 | 46 | 50 | 0.89 (0.53 to 1.49) |
+| timetable | 48 | 42 | 47 | 0.94 (0.77 to 1.14) |
+| oddball | 56 | 26 | 29 | 1.29 (0.79 to 2.11) |
+| sudoku | 24 | 24 | 24 | 1.03 (1.00 to 1.06) |
+| oisc `sll-8` | 8 | 8 | 8 | 1.02 (0.86 to 1.22) |
+| others, 14 cells | 112 | 108 | 109 | 1.13 (1.02 to 1.26) |
+| break scheduling | 40 | 40 | 40 | 1.34 (1.03 to 1.74) |
+| lockchart | 56 | 43 | 43 | 1.00: the solver's walk answers before the search |
+
+- **It is not faster everywhere.** Pyramid cells take 18% less work. The
+  refuted cell `bp4_BC012_IXA_LPI_FPBLE` took the default build 52.2G and
+  52.8G in the reference run, and the plain solver does not finish it within
+  30G at any of four seeds here; with the lean it falls in 23.5G, 24.5G and
+  27.0G at three of them. Break scheduling takes a third more work, and the
+  mixed group 13% more.
+- **Stronger is not better.** The middle strength is level with the plain
+  solver (239 against 241 on four seeds).
+- **The timetable gain is half luck.** +5 at seeds 4 to 7, where the plain
+  solver was low, and 0 at seeds 8 to 11.
+- **The 36 hard cells**: 26 against 16 solved runs of 144 over four seeds
+  (+10, +1 to +20): oddball 5 against 1, pyramid 8 against 5, the two cells
+  of the mixed group 3 against 1, case 3 against 2, the rest equal. Other arms there, seeds 4 and 5 (72 runs, plain 8): bursts 10,
+  local search 8, the first middle lean 14, the refined middle lean 12.
+
+### What it means
+
+- **A lean toward listed variables must not lower the solver's own.** This
+  is the finding to keep, for any later hook: on `case` cells three quarters
+  of the decisions are on variables no reading of the formula can name.
+- **What gains is small and uneven**: a few percent of the runs, by family
+  between 0.65 and 1.34 of the work. It is a candidate, not a result.
+- **Random bursts, the local search and the value are closed** as ways to
+  use the real unknowns: level, level, and worse.
+- **Next** (the owner's call of 2026-11-24): the solver makes the list from
+  its own reading (`d96.14.6`), and the refined lean runs on all 400 cells at
+  two seeds, then at eight fresh seeds on the cells it changes (`d96.14.5`).
+
+### Caveats
+
+- **The refined arm was picked on the first seeds** (4 to 7 easy, 4 and 5
+  hard). Its fair test is the seeds queued after: +9 of 352 with a range from
+  0 to +18.
+- **106 cells picked by rules made beforehand**; the lean is untested on the
+  other 294, where it may do nothing or harm.
+- **The role file is made outside the solver** and takes minutes a cell; the
+  pyramid's needs the reading with numbers, which the solver does not have.
+- **Tight limits on the easy cells**: 8 times the most work a solved
+  reference run took. A cell that needs more at a new seed counts as
+  unsolved for both arms alike.
+- **The base is shared.** Every arm is compared with the same plain runs, so
+  a seed where the plain solver is unlucky lifts all arms at once (timetable
+  at seeds 6 and 7).
+- **One strength each.** The dials were not tuned beyond the three strengths
+  of the lean.
+
+### Review
+
+Codex, four rounds (`log/guide-nudges-2026-11-23/review-round*.txt`), the
+last two without a finding ("No actionable bugs were found. All 27
+guide/role tests, 9 smoke tests, and 180 paired randomized cases passed.").
+No round found a fault in an answer. What they found, each fixed with a
+test:
+
+- round 1: the head start after a restart was used up by the restart's own
+  look at the next decision, so it took no decision (now a restart with a
+  head start goes back to the root, and the look counts nothing); and the
+  first order was given before the solver's first simplification, so a
+  replaced variable's stand-in did not get it (now given at the first
+  decision). Both fixed before any long run.
+- round 2: a local-search weight under 100 percent could round a score to
+  zero. No run used such a weight.
+
+### Reproduce
+
+```bash
+python3 tools/guide_report.py selftest
+# the committed table again from the run folder
+python3 tools/guide_report.py collect A1 H1 A2 N1 H2 H3 C2 A4 H4 \
+  --dir log/guide-nudges-2026-11-23 --out benchmarks/rl/guide_nudges_2025.tsv --brief
+# every arm on the easy cells at seeds 4 and 5, with ranges for luck
+python3 tools/guide_report.py boot --cells easy --seeds 4,5
+# the refined mild lean: all runs, then by family
+python3 tools/guide_report.py boot --arms bias-mild@new
+python3 tools/guide_report.py table --cells easy --arms bias-mild@new --by-group
+python3 tools/guide_report.py noise --cells easy
+```
+
+Arm names in the table: `bias-mild`, `bias-mid`, `bias-strong` (the lean),
+`bursts`, `walk`, `protect`, `init`, `restart3`, `noreuse`, `yes`, `no`,
+`allyes`, `allno`, `cause20`, `front`, `bump2`; `@new` marks the refined
+runs and `@pl` the pyramid runs with the placements preferred.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

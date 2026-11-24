@@ -578,7 +578,17 @@ fn pick_literal(solver: &mut Solver, walker: &mut Walker, binaries: &[LitPair]) 
         }
         picked_lit = lit;
         let breaks = break_value(solver, walker, lit);
-        let score = scale_score(walker, breaks);
+        let mut score = scale_score(walker, breaks);
+        // Not in kissat: a flip of a real unknown weighs more (src/guide.rs; off by default)
+        if solver.guide.walk_on && crate::guide::prefers(solver, lit >> 1) {
+            // a weight under 100 percent can round the smallest score down
+            // to zero: such a score stays as it is, so every score is positive
+            let weighted = score * solver.guide.walk;
+            if weighted > 0.0 {
+                score = weighted;
+            }
+            solver.guide.n.walk += 1;
+        }
         debug_assert!(score > 0.0);
         walker.scores.push(score);
         sum += score;

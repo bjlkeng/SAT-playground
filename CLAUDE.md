@@ -25,6 +25,27 @@ finished change, experiment or bead:
    can change 190 locks, so the walk takes about 100 times longer per step.
 4. Then the caveats, and what it means for the next step.
 
+**Write that report ELI20: as to a bright 20-year-old who has never seen this
+project.** The owner asked for this on 2026-11-23, after a report that was
+correct and still too cryptic to read. Every time you come back with a change,
+an experiment or a result:
+- Start from the question: what we wanted to know or fix, and why, in one or
+  two sentences.
+- Give the few facts needed to follow it in everyday words. A decision is "a
+  guess". A variable the formula only uses to write its rules down is
+  "bookkeeping".
+- Say what was done as numbered steps, in the order it was done.
+- Never use a word you coined while working ("role", "held", "stands for",
+  "the control word") without saying what it means, each time. Option names,
+  file names, bead ids, review rounds and build hashes go in a line or two at
+  the end.
+- One everyday scenario carries both the intuition and the worked example
+  (three people and a window seat, not 260 variables).
+- Then the result as one sentence and a small table, what it means, the
+  caveats, and the decision you need from the owner.
+A report in this form: solver README, "Nudges toward the real unknowns", "In
+plain words".
+
 ## What this repo is
 
 Boolean SAT solvers built iteratively in Rust, one directory per iteration,
@@ -206,6 +227,34 @@ work is **solver 13** and the RL scheduler on top of it.
   `--phase`). The role file is an input: the solver reads it before it opens
   any file to write and refuses one that is a file of its own; `run.sh` with
   an output directory does not run with a role file named.
+  G.17.9, nudges toward the real unknowns (2026-11-23/24; bead `d96.14.9`;
+  solver README, "Nudges toward the real unknowns"). The owner asked whether
+  pushing the solver's guesses toward the variables nothing computes (the
+  real unknowns) makes it solve more. Nine nudges as options of one module
+  (`src/guide.rs`, `--guide=1` with a role file, **all off by default**):
+  a lean in the scores and the queue (`guidebump`, `guidefront`,
+  `guidewindow`), credit for the causes of a conflict (`guidecause`), a first
+  order (`guideinit`), a head start after restarts (`guiderestart`), no
+  elimination (`guideprotect`), random bursts (`guiderandec`), the local
+  search (`guidewarm`, `guidewalk`) and a preferred value (`guidephase`).
+  5,286 runs on 106 cells of 2025 at fresh seeds under work limits, every
+  model checked (`benchmarks/rl/guide_nudges_2025.tsv`,
+  `tools/guide_report.py`). **One nudge gains a little: the mild lean with
+  the solver's own variables preferred too** (`SAT_GUIDE_ROLES=...,new`
+  with `--guidebump=200 --guidefront=1`): 527 solved runs against 501 of 704
+  (range for luck +12 to +43), and 261 against 252 on the seeds queued after
+  it was picked (0 to +18). By family it runs from 0.65 of the work to 1.34
+  (pyramid 0.82, break scheduling 1.34). The lean as first built, real
+  unknowns only, lost 31 of 280 runs: it pushed the solver's own `factor`
+  variables down with the bookkeeping, and on `case` cells those take 75% of
+  the decisions. **A nudge toward listed variables must never lower the
+  variables the solver makes itself.** Level with the plain solver: random
+  bursts, the local search, no elimination, the first order. Worse: the head
+  start (8 runs behind its own control) and every preferred value (the
+  solver's own always-true or always-false switch loses a third of the
+  solves). **An arm picked from its first seeds needs fresh seeds before a
+  claim**: the gain was +13 of 280 where the arm was picked and +3 of 280 on
+  the next four seeds.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode

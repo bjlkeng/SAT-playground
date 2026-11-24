@@ -436,6 +436,10 @@ fn can_eliminate_variable(solver: &Solver, idx: u32) -> bool {
     if flags.frozen() {
         return false;
     }
+    // Not in kissat: nor is a real unknown that is kept (src/guide.rs; off by default)
+    if solver.guide.protect && crate::guide::prefers(solver, idx) {
+        return false;
+    }
 
     true
 }
@@ -454,7 +458,7 @@ fn eliminate_variable(solver: &mut Solver, idx: u32) -> bool {
     // Not in kissat: a variable that goes while two clauses make it equal to
     // another is replaced by that one, for the count by role (src/roles.rs;
     // off by default)
-    if solver.roles.on {
+    if solver.roles.follow {
         crate::roles::eliminating(solver, idx);
     }
     connect_resolvents(solver);

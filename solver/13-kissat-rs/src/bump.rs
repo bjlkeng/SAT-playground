@@ -98,6 +98,28 @@ pub fn bump_variable(solver: &mut Solver, idx: u32) {
 
 // C static `bump_analyzed_variable_scores`.
 fn bump_analyzed_variable_scores(solver: &mut Solver) {
+    // Not in kissat: a preferred variable gains more (src/guide.rs; off by default)
+    if solver.guide.bump_on {
+        for i in 0..solver.analyzed.len() {
+            let idx = solver.analyzed[i];
+            if !solver.flags[idx as usize].active() {
+                continue;
+            }
+            if crate::guide::prefers(solver, idx) {
+                let old_score = heap::get_heap_score(&solver.scores, idx);
+                let new_score = old_score + solver.scinc * solver.guide.bump;
+                heap::update_heap(&mut solver.scores, idx, new_score);
+                solver.guide.n.bumped += 1;
+                if new_score > MAX_SCORE {
+                    rescale_scores(solver);
+                }
+            } else {
+                bump_analyzed_variable_score(solver, idx);
+            }
+        }
+        bump_score_increment(solver);
+        return;
+    }
     for i in 0..solver.analyzed.len() {
         let idx = solver.analyzed[i];
         if solver.flags[idx as usize].active() {
@@ -120,6 +142,34 @@ fn move_analyzed_variables_to_front_of_queue(solver: &mut Solver) {
     }
 
     sort_bump(solver);
+
+    // Not in kissat: the preferred variables are moved last, each group in
+    // the usual order, so they end in front (src/guide.rs; off by default)
+    if solver.guide.front {
+        let mut any = false;
+        for i in 0..solver.ranks.len() {
+            let idx = solver.ranks[i].data;
+            if !solver.flags[idx as usize].active() {
+                continue;
+            }
+            if crate::guide::prefers(solver, idx) {
+                any = true;
+            } else {
+                crate::inlinequeue::move_to_front(solver, idx);
+            }
+        }
+        if any {
+            for i in 0..solver.ranks.len() {
+                let idx = solver.ranks[i].data;
+                if solver.flags[idx as usize].active() && crate::guide::prefers(solver, idx) {
+                    crate::inlinequeue::move_to_front(solver, idx);
+                }
+            }
+            solver.guide.n.fronted += 1;
+        }
+        solver.ranks.clear();
+        return;
+    }
 
     for i in 0..solver.ranks.len() {
         let idx = solver.ranks[i].data;

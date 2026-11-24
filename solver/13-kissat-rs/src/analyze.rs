@@ -605,6 +605,11 @@ pub fn analyze(solver: &mut Solver, conflict: Conflict) -> i32 {
                 }
             }
             analyze_reason_side_literals(solver);
+            // Not in kissat: the real unknowns the conflict came from are
+            // bumped with it (src/guide.rs; off by default)
+            if solver.guide.cause != 0 && !solver.probing && solver.options.bump != 0 {
+                crate::guide::credit_causes(solver);
+            }
             crate::learn::learn_clause(solver);
             reset_analysis_but_not_analyzed_literals(solver);
             res = 1;

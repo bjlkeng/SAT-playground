@@ -1198,6 +1198,12 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
         close_proof(solver, &mut app);
         return 1;
     }
+    // not in kissat: the nudges toward the real unknowns; nothing with guide off
+    if let Err(text) = crate::guide::install(solver) {
+        crate::error::error(format_args!("{}", text));
+        close_proof(solver, &mut app);
+        return 1;
+    }
     crate::print::section(solver, "solving");
     // not in kissat: the control split (src/control.rs); 0 with ctlsplit off
     let split = crate::control::split(solver);

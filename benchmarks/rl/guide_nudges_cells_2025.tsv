@@ -1,0 +1,107 @@
+cell	group	kind	stem	role_file_options	preferred_roles	value_roles	run_options	reference_work_G_seeds_2_3
+bp4_CSO_AM_IXA_LP	pyramid	easy	0205e2dffaef93a90c239df31755f2e1-bp4_CSO_AM_IXA_LP.normalised	--order --name 1-28812=placement	number,free,choice	placement		5.89 7.32
+sudoku-N30-12	sudoku	easy	0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12		choice,number,free,control	choice		18.69 18.48
+dislog-a14	other	hard	0ae917c2e0c1d39cbe411c29b2f5ff08-dislog_a14_x14_n24		choice,number,free,control	choice		35.15 60.40
+oddball_53_5_tto_zp	oddball	hard	0c0430a68f147be18ab3fded07f30fdb-oddball_53_5_tto_zp.normalised		choice,number,free,control	choice		29.30T 23.06T
+Break_12_50	break	easy	0e1d562093d5f4fc9013cf4a14a03f70-Break_12_50.xml		choice,number,free,control	choice		0.34 0.27
+6s268r_Iter94	other	easy	0e36fa2e12f32cde67937803299fb57b-6s268r_Iter94		choice,number,free,control	choice		0.81 1.81
+oddball_54_5_tto_zp	oddball	hard	0ec8c5e9084cbc8a326f8f37e1abf741-oddball_54_5_tto_zp.normalised		choice,number,free,control	choice		31.36T 25.75T
+bp4_BC012_CSO_AM_IXA	pyramid	easy	0f269188707a1b2f309dd1c70bfe22b0-bp4_BC012_CSO_AM_IXA.normalised	--order --name 1-28812=placement	number,free,choice	placement		20.48 25.44
+6s299b685_Iter22	other	easy	1576e239e1c17939f24688a12fb10fae-6s299b685_Iter22		choice,number,free,control	choice		0.44 0.44
+planning-pathways17	other	easy	16c999d046885c8e51f196e60c34d966-aaai10-planning-ipc5-pathways-17-step20		choice,number,free,control	choice		4.85 4.83
+spg_300_300	other	easy	18d4124324b56e434118f9ef72198d84-spg_300_300		choice,number,free,control	choice		4.05 5.27
+oddball_80_5_tto_zp	oddball	hard	19951d43eff5fc4ef6fd07d7a5324fa0-oddball_80_5_tto_zp.normalised		choice,number,free,control	choice		27.95T 13.10T
+oddball-tto	oddball	easy	1b8806812861df2b7e91dc316ad1ef80-oddball_52_5_tto_zp.normalised		choice,number,free,control	choice		19.06T 13.58
+bp4_BC012_AM_FPBEQ_ZR	pyramid	hard	1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		60.45T 58.97T
+SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50	timetable	easy	1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised		choice,number,free,control	choice		0.75 0.89
+QG7-gensys-icl006.sat05-3132	other	easy	1e0d58c7e52319b3b17e343ec7ca6de5-QG7-gensys-icl006.sat05-3132.reshuffled-07		choice,number,free,control	choice		21.26 15.48
+shuffling-1-s1769330284-of-bench-sat04-422.u	other	easy	21b173943af57eefaac5e88bfa2662ad-shuffling-1-s1769330284-of-bench-sat04-422.used-as.sat04-561		choice,number,free,control	choice		4.35 5.91
+x9-10070.sat	case	easy	22df1827e3253fc824cc7ce806d75e0a-x9-10070.sat.sanitized		choice,number,free,control	choice		0.65 4.28
+SC25_Timetable_C_481_E_49_Cl_32_D_7_T_58	timetable	easy	24bde22f729a988fb2394b644cb60d39-SC25_Timetable_C_481_E_49_Cl_32_D_7_T_58.normalised		choice,number,free,control	choice		1.39 1.37
+itc2021-late10	itc2021	hard	25390e9d1fa1926485db7eb2d5a20ea8-ITC2021_Late_10.xml		choice,number,free,control	choice		40.33T 40.71T
+reconf-queen20	reconf	hard	27570c6780aaade3dc771c6a12534fb8-reconf10_22_queen20_3_8667		choice,number,free,control	choice		55.67 34.54
+bp4_AM_IXA_FPBLE	pyramid	easy	27cb3a6ca772613c5998d7f78a55ba45-bp4_AM_IXA_FPBLE.normalised	--order --name 1-28812=placement	number,free,choice	placement		36.98 24.09
+oddball_69_5_tto_zp	oddball	easy	2b4467a5ac4ac41b36d4c3432b07f767-oddball_69_5_tto_zp.normalised		choice,number,free,control	choice		2.91 30.12T
+lock-group1-L200-K289-p8d4j1.no-30f6	lockchart	hard	30f64b3b0870ce5d22d4217782224dfe-lockchart-group1-L200-K289-p8d4j1.normalised		choice,number,free,control	choice		14.25T 13.54T
+bp4_TCO_CSO_ZR	pyramid	hard	35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		61.38T 61.80T
+6s299b685_Iter30	other	easy	3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30		choice,number,free,control	choice		2.01 1.74
+lock-group2-rnd0.3-L19-K38-P8D4-3958	lockchart	easy	395829127ec213c2e69a6a13dda3623b-lockchart-group2-rnd0.3-L19-K38-P8D4J1_1.normalised		choice,number,free,control	choice		2.34 4.59
+case6	case	hard	3bfa92996634d2ddc6c0568bba9a0f99-case6.normalised		choice,number,free,control	choice		37.87 55.12
+lock-group2-rnd0.3-L19-K38-P8D4-3cda	lockchart	easy	3cda1cbfbcabfc71ece7961d4d6ad1bb-lockchart-group2-rnd0.3-L19-K38-P8D4J1_3		choice,number,free,control	choice		0.95 0.83
+gto_p60c238	other	easy	3f67f6767764855e516e5394be1145e5-gto_p60c238-sc2018		choice,number,free,control	choice		6.06 6.54
+case10	case	easy	416e33a8463911546e4cd87d282a7e1e-case10		choice,number,free,control	choice		5.98 44.77
+oddball_51_5_tto_zp	oddball	hard	41915707d831e1365389d3cc47c7953f-oddball_51_5_tto_zp.normalised		choice,number,free,control	choice		20.07T 25.84T
+manthey_single-ordered-initialized-w42-b8	other	easy	43687a48fb119ca61b47c2fc69a71e7d-manthey_single-ordered-initialized-w42-b8		choice,number,free,control	choice		7.94 7.68
+oddball_67_5_tto_zp	oddball	hard	43ebdada6f6153b50a140ba908d5bf44-oddball_67_5_tto_zp.normalised		choice,number,free,control	choice		20.71T 24.83T
+vmpc-28	other	hard	4ba2c1aa580b6497df6baf5e7e2c87be-at-least-two-vmpc_28		choice,number,free,control	choice		59.39 57.63T
+lock-group2-rnd0.3-L18-K36-P8D4-4c03	lockchart	easy	4c037368864330bff3940837ac28ac14-lockchart-group2-rnd0.3-L18-K36-P8D4J1		choice,number,free,control	choice		0.77 0.82
+oddball_26_4_ttf	oddball	hard	4cf3505e5183c26bbd97d89fdaa93f8c-oddball_26_4_ttf.normalised		choice,number,free,control	choice		49.78 35.66
+case7	case	easy	5c8f4e54e195d46053b04e232a5661c4-case7.normalised		choice,number,free,control	choice		0.38 0.57
+lock-group2-rnd0.3-L19-K38-P8D4-5d62	lockchart	easy	5d62e4d7ab116c477c8d4f5bd36907de-lockchart-group2-rnd0.3-L19-K38-P8D4J1_2		choice,number,free,control	choice		0.85 0.94
+bp4_CSO_IXA_ZR	pyramid	easy	5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		54.70 3.79
+Break_12_30	break	easy	602c8a200227ab9d64d855164d35b5cf-Break_12_30.xml		choice,number,free,control	choice		0.95 0.48
+hid-uns-enc-6-1-0-0-0-0-14492	other	easy	6147e666b75f603a4c4490d21ab654cd-hid-uns-enc-6-1-0-0-0-0-14492		choice,number,free,control	choice		2.07 2.23
+em-8-4-5	em	easy	64cb3656e0c03b3db7033ee9b987f280-em_8_4_5_cmp		choice,number,free,control	choice		18.53 2.88
+summle_X8638_steps7_I1-2-2-4-4-8-25-100	other	easy	6ef090a10c10352090100af7b6654c31-summle_X8638_steps7_I1-2-2-4-4-8-25-100		choice,number,free,control	choice		0.75 0.65
+bp4_CSO_LP_FPBLE_ZR_YS	pyramid	easy	6f354fbea13b25a49f3edc1cd10c48d5-bp4_CSO_LP_FPBLE_ZR_YS.normalised	--order --name 1-28812=placement	number,free,choice	placement		6.80 6.69
+case13	case	easy	6f730dd121471749dc0b4baca2573bf7-case13.normalised		choice,number,free,control	choice		0.99 0.20
+bp4_LPI_FPBEQ_ZR	pyramid	hard	72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		59.81T 59.69T
+bp4_CB_CSO_LP_FPBEQ_FPBLE	pyramid	easy	76bef98aafe7e718e98761f058c7dc1d-bp4_CB_CSO_LP_FPBEQ_FPBLE.normalised	--order --name 1-28812=placement	number,free,choice	placement		13.97 12.42
+SC25_Timetable_C_495_E_43_Cl_35_D_7_T_58	timetable	hard	77e655b23c0a50d911c0384ef8fe266d-SC25_Timetable_C_495_E_43_Cl_35_D_7_T_58.normalised		choice,number,free,control	choice		36.09T 33.01T
+oddball_56_5_tto_zp	oddball	easy	7a206b67366c3049f214f360ff943f62-oddball_56_5_tto_zp.normalised		choice,number,free,control	choice		3.78 19.68T
+Break_triple_12_20	break	easy	7a44efe7c2dbf88a61e7cb750f307937-Break_triple_12_20.xml		choice,number,free,control	choice		0.69 1.72
+reconf10_70_queen14_2	reconf	easy	8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2		choice,number,free,control	choice		15.44 4.81
+lock-group1-L210-K303-p8d4j1.no-8900	lockchart	hard	89002102bdb86946869a06dc1f604315-lockchart-group1-L210-K303-p8d4j1.normalised		choice,number,free,control	choice		14.11T 12.97T
+SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50	timetable	easy	8e62c5d47920ffe36052f86177403e70-SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50.normalised		choice,number,free,control	choice		1.84 1.67
+SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58	timetable	hard	901fa244999d250bc8d8cce19cabc114-SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58.normalised		choice,number,free,control	choice		31.91T 31.47T
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	pyramid	hard	9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		59.56T 59.86T
+timetable-496	timetable	hard	95931bb010dba306e24c79c120044ff9-SC25_Timetable_C_496_E_48_Cl_33_D_7_T_50.normalised		choice,number,free,control	choice		33.18T 29.64T
+reconf10_68_queen14_1	reconf	easy	95abe8aeebbe88fcb0503b13109593b3-reconf10_68_queen14_1		choice,number,free,control	choice		8.77 18.84
+lock-group3-L13-K26-p4d3j1.norm-9697	lockchart	hard	96977e8e00a3728097861502a449e343-lockchart-group3-L13-K26-p4d3j1.normalised		choice,number,free,control	choice		67.06T 67.39T
+bp4_BC012_IXA_LPI_FPBLE	pyramid	hard	98a9352230efc411c092f1dcdcdedcfc-bp4_BC012_IXA_LPI_FPBLE.normalised	--order --name 1-28812=placement	number,free,choice	placement		52.78 52.16
+bp4_TCO_CSO_IXA_LP_ZR	pyramid	hard	98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		63.98T 64.37T
+anbul-dated-5-15-u	other	easy	9a839badecb20dcf505ec79eedd3753a-anbul-dated-5-15-u		choice,number,free,control	choice		1.94 1.44
+SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50	timetable	hard	9f1cb42232335f84435126b5ae0fb701-SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50.normalised		choice,number,free,control	choice		32.08T 33.06T
+SC25_Timetable_C_498_E_46_Cl_34_D_7_T_50	timetable	hard	affe8884c8c744ab2f07683ed1cf0d1a-SC25_Timetable_C_498_E_46_Cl_34_D_7_T_50.normalised		choice,number,free,control	choice		34.10T 34.71T
+SAT_dat.k100-24_1_rule_2	other	easy	b27017cae233481c679e3c3be6f00af8-SAT_dat.k100-24_1_rule_2		choice,number,free,control	choice		16.23 14.58
+lock-group3-L15-K29-p4d3j1.norm-b99b	lockchart	hard	b99ba7e9113280393c64863dfbfa2c3b-lockchart-group3-L15-K29-p4d3j1.normalised		choice,number,free,control	choice		66.44T 66.57T
+ITC2021_Early_12	itc2021	easy	bc5a06872fa6dfc9acbc7f782f0a4439-ITC2021_Early_12.xml		choice,number,free,control	choice		2.77 1.04
+reconf10_73_queen13_2	reconf	easy	c033577c6f5f9a1545537518af964305-reconf10_73_queen13_2		choice,number,free,control	choice		21.91 2.20
+case17	case	easy	c21096fa2f550785c33dc862d83bc941-case17.normalised		choice,number,free,control	choice		1.26 4.80
+bp4_IXA_FPBEQ_ZR	pyramid	easy	c6470503d1ff16cbafa18764b13d80ed-bp4_IXA_FPBEQ_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		3.81 11.29
+SC25_Timetable_C_481_E_48_Cl_32_D_7_T_58	timetable	easy	c7ee94464ba3b25e97fc9b38868b7154-SC25_Timetable_C_481_E_48_Cl_32_D_7_T_58.normalised		choice,number,free,control	choice		1.21 2.30
+ITC2021_Middle_9	itc2021	easy	c86b261162cef181dc513963a8acb77f-ITC2021_Middle_9.xml		choice,number,free,control	choice		0.42 0.57
+bp5_CSO	pyramid	easy	c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	--order --name 1-120285=placement	number,free,choice	placement		6.06 14.21
+case16	case	easy	ca3c65a863526793968fc30618a42709-case16.normalised		choice,number,free,control	choice		1.87 21.96
+em_11_3_4_cmp	em	easy	cbd0933002d6c4ea99ceb47bb0c3f4c9-em_11_3_4_cmp		choice,number,free,control	choice		1.08 1.89
+sted2-219	other	easy	cdd89d1b9259dcf26d4a53ba94041e93-sted2_0x0_n219-342		choice,number,free,control	choice		11.57 34.97
+break-16-70	break	easy	d0298807e51730261ef65db827dcd70f-Break_triple_16_70.xml		choice,number,free,control	choice		4.82 2.25
+lock-group1-L190-K276-p8d4j1.no-d2af	lockchart	easy	d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised		choice,number,free,control	choice		13.90T 9.49
+bp4_BC012_AM_IXA_LPI	pyramid	easy	d3e4e0f01836bb359725c6aa5072afce-bp4_BC012_AM_IXA_LPI.normalised	--order --name 1-28812=placement	number,free,choice	placement		14.24 11.87
+bp4_BC012_CSO_IXA_LP	pyramid	easy	d88a8a62342be0ef04bd3b429f311352-bp4_BC012_CSO_IXA_LP.normalised	--order --name 1-28812=placement	number,free,choice	placement		7.94 8.90
+SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50	timetable	easy	d89fc3e9c24e0383e940464f4704657e-SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50.normalised		choice,number,free,control	choice		2.82 1.27
+lock-group3-L11-K23-p4d3j1.norm-dbb4	lockchart	hard	dbb42e010bed2259e4e27bc43e4d86c6-lockchart-group3-L11-K23-p4d3j1.normalised		choice,number,free,control	choice		70.96T 66.16T
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	pyramid	hard	dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		34.21 60.36T
+oddball_57_5_tto_zp	oddball	easy	ddf9620410e6a4351f64c745670ef5d4-oddball_57_5_tto_zp.normalised		choice,number,free,control	choice		24.24T 11.90
+sudoku-N30-16	sudoku	hard	de8988028668791f35a7b9f94353b5b9-sudoku-N30-16		choice,number,free,control	choice		30.70T 29.04T
+sudoku-N30-23	sudoku	hard	e442248e155eb81a811edd1deca8a2cd-sudoku-N30-23		choice,number,free,control	choice		30.05T 29.65T
+Break_triple_14_48	break	easy	e707c7e87816dd02ae433d268bd327c6-Break_triple_14_48.xml		choice,number,free,control	choice		2.74 1.44
+sudoku-N30-15	sudoku	easy	ea40162dda3f9b923b6160854cf7f75a-sudoku-N30-15		choice,number,free,control	choice		13.74 12.76
+ITC2021_Early_9	itc2021	easy	ed9f304b537a768f462bd1c723c5396e-ITC2021_Early_9.xml		choice,number,free,control	choice		0.26 0.18
+oddball_19_4_ttf	oddball	easy	efc1b7cc3861df8c2b68ca10399b794e-oddball_19_4_ttf.normalised		choice,number,free,control	choice		3.25 3.35
+SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50	timetable	easy	f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised		choice,number,free,control	choice		0.95 28.23T
+lock-group2-rnd0.3-L19-K38-P8D4-f197	lockchart	easy	f1973c0a4e960a914ff12aa7e4e9293c-lockchart-group2-rnd0.3-L19-K38-P8D4J1_4		choice,number,free,control	choice		0.47 0.99
+oddball_24_4_ttf	oddball	easy	f1cd694d42891a20c96a65ee1c321edc-oddball_24_4_ttf.normalised		choice,number,free,control	choice		24.74 15.40
+bp4_TCO_IXA_FPBLE_ZR	pyramid	hard	f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised	--order --name 1-28812=placement	number,free,choice	placement		47.06 58.61T
+oddball_112_5_ttf	oddball	easy	f406e2b8b28f205f16e8983bd522db13-oddball_112_5_ttf.normalised		choice,number,free,control	choice		14.13 14.05
+bp4_BC012_CSO_IXA_LP_FPBLE	pyramid	easy	f5c12b1eb9c49e994abb238576a9372b-bp4_BC012_CSO_IXA_LP_FPBLE.normalised	--order --name 1-28812=placement	number,free,choice	placement		6.73 6.82
+case9	case	easy	fab2022deb130fe3ad1136a5c71b4109-case9		choice,number,free,control	choice		2.47 1.21
+SC25_Timetable_C_495_E_50_Cl_33_D_7_T_50	timetable	hard	fae6cf26f3da1e7d8fc4926a9ca86b61-SC25_Timetable_C_495_E_50_Cl_33_D_7_T_50.normalised		choice,number,free,control	choice		33.65T 30.29T
+sudoku-N30-28	sudoku	easy	fc67d414ea20a0ffffc087d7577af2fe-sudoku-N30-28		choice,number,free,control	choice		13.43 12.57
+bp4_CB_LP_FPBLE	pyramid	easy	fdc4dd704e4d93a50fafb1debd8a6789-bp4_CB_LP_FPBLE.normalised	--order --name 1-28812=placement	number,free,choice	placement		5.38 7.49
+oddball_29_4_ttf	oddball	hard	fdefca5f5236d5a8361dbdff0d017eeb-oddball_29_4_ttf.normalised		choice,number,free,control	choice		70.67T 68.00T
+lock-group1-L220-K317-p8d4j1.no-fe9b	lockchart	easy	fe9b9a35531e13dab41307e569386dab-lockchart-group1-L220-K317-p8d4j1.normalised		choice,number,free,control	choice		9.57 4.11
+oisc-and-11	oisc	hard	d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11	--name 726-736=control	control	none	--ctlsplit=0	-
+oisc-and-12	oisc	hard	5aed29ce52192a55ffbd2a6f340017e7-oisc-subrv-and-nested-12	--name 787-798=control	control	none	--ctlsplit=0	-
+oisc-and-15	oisc	hard	053e06424279f5cfec8bb14dfa9af23c-oisc-subrv-and-nested-15	--name 970-984=control	control	none	--ctlsplit=0	-
+oisc-sll-8	oisc	easy	113e692e379518bc3277855277dcc1b8-oisc-subrv-sll-nested-8	--name 10-17=control	control	none	--ctlsplit=0	-

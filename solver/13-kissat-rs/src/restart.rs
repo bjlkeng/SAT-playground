@@ -135,12 +135,22 @@ fn reuse_trail(solver: &mut Solver) -> u32 {
     if keep == solver.level {
         return keep;
     }
+    // Not in kissat: with a head start for the real unknowns the next
+    // decisions are theirs, so no part of the trail is kept for the usual
+    // next decision (src/guide.rs; off by default)
+    if solver.guide.on && solver.guide.restart != 0 {
+        return keep;
+    }
 
+    // Not in kissat: the look at the next decision decides nothing, and the
+    // nudges count nothing in it (src/guide.rs; off by default)
+    solver.guide.peek = solver.guide.on;
     let res = if solver.stable {
         reuse_stable_trail(solver, keep)
     } else {
         reuse_focused_trail(solver, keep)
     };
+    solver.guide.peek = false;
 
     if res != 0 {
         solver.statistics.restarts_reused_trails += 1; // INC
@@ -174,6 +184,10 @@ pub fn restart(solver: &mut Solver) {
         ),
     );
     crate::backtrack::backtrack_in_consistent_state(solver, level);
+    // Not in kissat: the head start of the real unknowns begins (src/guide.rs; off by default)
+    if solver.guide.on {
+        crate::guide::restarted(solver);
+    }
     if !solver.stable {
         update_focused_restart_limit(solver);
     }

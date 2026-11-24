@@ -621,7 +621,7 @@ pub fn inccnf_options(solver: &mut Solver) {
     for name in [
         "structsym", "structsymext", "structpoints", "structparity", "structcount", "structcsp", "structdd", "structnum",
         "structarith", "structsort", "structdiv", "gauss", "card", "freewalk", "freeread", "ctlfirst", "ctlsplit",
-        "rolecount",
+        "rolecount", "guide",
     ] {
         if crate::internal::get_option(solver, name) != 0 {
             crate::internal::set_option(solver, name, 0);

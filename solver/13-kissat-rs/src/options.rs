@@ -282,6 +282,23 @@ kissat_options! {
     (gausslimit, 256, 1, 100_000, "parity engine matrix size cap (M bits)"),
     (gausswindow, 65536, 1, i32::MAX, "parity engine yield check window (K ticks of its work)"),
     (gaussyield, 20, 0, 1_000_000, "parity engine minimum yield (propagations per M ticks, 0 none)"),
+    // Not in kissat (2026-11-23, bead SAT-playground-d96.14.9; an
+    // experiment, all off): nudges toward the variables a role file calls
+    // real unknowns (src/guide.rs). `guide` turns the module on; each other
+    // option is one nudge and does nothing without it.
+    (guide, 0, 0, 1, "nudges toward the real unknowns (SAT_ROLE_FILE, SAT_GUIDE_ROLES)"),
+    (guidebump, 0, 0, 1_000_000, "stable mode: score bump of a preferred variable (percent, 0 as usual)"),
+    (guidecause, 0, 0, 1_000_000, "reasons walked back from a conflict to bump the preferred variables behind it"),
+    (guidefront, 0, 0, 1, "focused mode: preferred variables of a conflict go to the queue's front last"),
+    (guideinit, 0, 0, 1, "preferred variables start at the front of the queue with one bump"),
+    (guidephase, 0, 0, 2, "value tried on a variable with a preferred value: 1 true, 2 false"),
+    (guidephaseshare, 100, 0, 100, "share of those decisions that take the preferred value (percent)"),
+    (guideprotect, 0, 0, 1, "preferred variables are not eliminated"),
+    (guiderandec, 0, 0, 1, "random decisions are drawn from the preferred variables"),
+    (guiderestart, 0, 0, 1000, "decisions after each restart taken from the preferred variables"),
+    (guidewalk, 0, 0, 1_000_000, "local search: weight of a preferred variable's flip (percent, 0 as usual)"),
+    (guidewarm, 0, 0, 1, "warm-up before a local search sets the preferred variables first"),
+    (guidewindow, 0, 0, 65536, "focused mode: a preferred variable among the next W of the queue is taken"),
     (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates"),
     // Not in kissat (epic SAT-playground-bp3, src/assume.rs): the test mode
     // that reads an incremental CNF file ("p inccnf", then `a` lines) and
@@ -917,8 +934,9 @@ mod tests {
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
         // assumptions), structdivassume (2026-11-18), structnum,
-        // structnumticks (2026-11-19), and rolecount (2026-11-22)
-        assert_eq!(OPTION_TABLE.len(), 158 + 77);
+        // structnumticks (2026-11-19), rolecount (2026-11-22), and the
+        // thirteen guide* options (2026-11-23, an experiment)
+        assert_eq!(OPTION_TABLE.len(), 158 + 90);
     }
 
     #[test]

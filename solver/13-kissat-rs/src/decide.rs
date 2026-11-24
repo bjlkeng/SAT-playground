@@ -141,6 +141,15 @@ fn next_random_decision(solver: &mut Solver) -> u32 {
         start_random_sequence(solver);
     }
 
+    // Not in kissat: the random decisions drawn from the preferred variables
+    // (src/guide.rs; off by default)
+    if solver.guide.randec {
+        let idx = crate::guide::random(solver);
+        if idx != INVALID_IDX {
+            return idx;
+        }
+    }
+
     loop {
         let idx = crate::random::next_random32(&mut solver.random) % solver.vars;
         if !solver.flags[idx as usize].active() {
@@ -163,6 +172,28 @@ pub fn next_decision_variable(solver: &mut Solver) -> u32 {
             return idx;
         }
     }
+    // Not in kissat: the nudges toward the real unknowns (src/guide.rs; off
+    // by default): the warm-up sets them first, and so do the first
+    // decisions after a restart
+    if solver.guide.on {
+        // the first decision of the search: `guideinit` is done now, on the
+        // variables the solver holds after its first simplification
+        if !solver.warming && !solver.guide.peek && crate::guide::init_pending(solver) {
+            crate::guide::start(solver);
+        }
+        let idx = if solver.warming {
+            if solver.guide.warm {
+                crate::guide::warm(solver)
+            } else {
+                INVALID_IDX
+            }
+        } else {
+            crate::guide::head_start(solver)
+        };
+        if idx != INVALID_IDX {
+            return idx;
+        }
+    }
     let mut res = next_random_decision(solver);
     if res == INVALID_IDX {
         if solver.stable {
@@ -170,6 +201,11 @@ pub fn next_decision_variable(solver: &mut Solver) -> u32 {
             solver.statistics.score_decisions += 1; // INC (score_decisions): METRIC, re-enabled
         } else {
             res = last_enqueued_unassigned_variable(solver);
+            // Not in kissat: a preferred variable close behind it in the
+            // queue goes first (src/guide.rs; off by default)
+            if solver.guide.window != 0 && !solver.warming {
+                res = crate::guide::window(solver, res);
+            }
             solver.statistics.queue_decisions += 1; // INC (queue_decisions)
         }
     } else {
@@ -251,7 +287,15 @@ pub fn decide(solver: &mut Solver) {
     solver.level += 1;
     debug_assert!(solver.level != crate::internal::INVALID_LEVEL);
     let idx = next_decision_variable(solver);
-    let value = decide_phase(solver, idx);
+    // Not in kissat: the first decision noted for the nudges' exit line (src/guide.rs; off by default)
+    if solver.guide.on && solver.guide.first == 0 && !solver.warming {
+        crate::guide::first_decision(solver, idx);
+    }
+    let mut value = decide_phase(solver, idx);
+    // Not in kissat: the preferred value of a real unknown (src/guide.rs; off by default)
+    if solver.guide.phase != 0 && !solver.warming {
+        value = crate::guide::value(solver, idx, value);
+    }
     // Not in kissat: the decision counted by role (src/roles.rs; off by default)
     if solver.roles.on && !solver.warming {
         crate::roles::decided(solver, idx, value);

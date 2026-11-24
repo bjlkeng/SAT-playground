@@ -144,6 +144,9 @@ impl Mode {
 pub struct Roles {
     /// The count runs (`rolecount` and a role file read).
     pub on: bool,
+    /// The roles are installed and every replacement is followed: for the
+    /// count, or for the nudges of src/guide.rs alone (`guide`).
+    pub follow: bool,
     path: String,
     /// The role file's text, read by `reserve` and used up by `install`.
     text: Option<String>,
@@ -279,12 +282,15 @@ fn parse_roles(text: &str, original: usize) -> Result<(Vec<String>, Vec<u8>, usi
 /// Returns the role file's path for the files opened later (the policy's
 /// log), which may not be it either; None with the count off.
 pub fn reserve(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<Option<String>, String> {
-    if solver.options.rolecount == 0 {
+    if solver.options.rolecount == 0 && solver.options.guide == 0 {
         return Ok(None);
     }
     let path = match std::env::var("SAT_ROLE_FILE") {
         Ok(p) if !p.trim().is_empty() => p,
-        _ => return Err("rolecount is on but SAT_ROLE_FILE names no role file".to_string()),
+        _ => {
+            let what = if solver.options.rolecount != 0 { "rolecount" } else { "guide" };
+            return Err(format!("{} is on but SAT_ROLE_FILE names no role file", what));
+        }
     };
     for (what, other) in taken {
         if crate::policy_log::same_path(&path, other) {
@@ -329,11 +335,11 @@ pub fn added(solver: &mut Solver, elit: i32) {
 /// solver.  `max_var` is the formula's variable count.  An error is a role
 /// file that cannot be used: the run must not go on as if it counted.
 pub fn install(solver: &mut Solver, max_var: i32) -> Result<(), String> {
-    if solver.options.rolecount == 0 {
+    if solver.options.rolecount == 0 && solver.options.guide == 0 {
         return Ok(());
     }
     let Some(text) = solver.roles.text.take() else {
-        return Err("rolecount is on but no role file was read".to_string());
+        return Err("rolecount or guide is on but no role file was read".to_string());
     };
     let path = std::mem::take(&mut solver.roles.path);
     // the formula's variables: its declared count, or more when the relaxed
@@ -379,12 +385,17 @@ pub fn install(solver: &mut Solver, max_var: i32) -> Result<(), String> {
     r.path = path;
     r.flushed = solver.statistics.conflicts;
     r.before = solver.statistics.conflicts;
-    r.on = true;
-    let (roles, listed) = (solver.roles.names.len() - 2, solver.roles.listed);
-    crate::print::message(
-        solver,
-        format!("roles: counting decisions by role, {} roles over {} of {} variables", roles, listed, original),
-    );
+    r.follow = true;
+    // the count itself only with `rolecount`: the nudges of src/guide.rs
+    // need the roles and the replacements, not the counts
+    r.on = solver.options.rolecount != 0;
+    if solver.roles.on {
+        let (roles, listed) = (solver.roles.names.len() - 2, solver.roles.listed);
+        crate::print::message(
+            solver,
+            format!("roles: counting decisions by role, {} roles over {} of {} variables", roles, listed, original),
+        );
+    }
     Ok(())
 }
 
@@ -413,6 +424,24 @@ impl Roles {
             None => (NEW, 1 << NEW, 0),
         }
     }
+}
+
+/// The id of a role by its name, for src/guide.rs.
+pub fn role_id(solver: &Solver, name: &str) -> Option<usize> {
+    solver.roles.names.iter().position(|x| x == name)
+}
+
+/// The roles a DIMACS variable stands for, as itself and as its opposite,
+/// for src/guide.rs.
+#[inline]
+pub fn masks(solver: &Solver, e: usize) -> (u32, u32) {
+    let (_, same, flipped) = solver.roles.of(e);
+    (same, flipped)
+}
+
+/// How many DIMACS variables the roles know.
+pub fn known(solver: &Solver) -> usize {
+    solver.roles.role.len()
 }
 
 /// The role of an internal variable and the roles it stands for, as itself
@@ -606,6 +635,9 @@ fn note_equal(solver: &mut Solver, idx: u32, other: u32) -> bool {
     } else {
         r.same[eb] |= flipped;
         r.flipped[eb] |= same;
+    }
+    if solver.guide.on {
+        crate::guide::refresh(solver, eb);
     }
     true
 }

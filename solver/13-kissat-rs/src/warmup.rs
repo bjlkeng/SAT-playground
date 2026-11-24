@@ -13,6 +13,10 @@ pub fn warmup(solver: &mut Solver) {
     crate::profile::start_checked(solver, Prof::warmup); // START (warmup)
     debug_assert!(!solver.warming);
     solver.warming = true;
+    // Not in kissat: the warm-up's walk through the real unknowns starts (src/guide.rs; off by default)
+    if solver.guide.on {
+        crate::guide::warming(solver);
+    }
     solver.statistics.warmups += 1; // INC (warmups)
     // #ifndef QUIET — kept:
     let mut propagations = solver.statistics.warming_propagations;

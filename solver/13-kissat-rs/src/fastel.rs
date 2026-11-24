@@ -483,7 +483,7 @@ fn do_fast_eliminate(solver: &mut Solver, pivot: u32) {
     // Not in kissat: a variable that goes while two clauses make it equal to
     // another is replaced by that one, for the count by role (src/roles.rs;
     // off by default).  Its clauses are still in place here.
-    if solver.roles.on {
+    if solver.roles.follow {
         crate::roles::eliminating(solver, pivot);
     }
     solver.statistics.eliminated += 1; // INC (eliminated)
@@ -934,6 +934,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
             if pivot_flags.frozen() {
                 continue;
             }
+            // Not in kissat: nor is a real unknown that is kept (src/guide.rs; off by default)
+            if solver.guide.protect && crate::guide::prefers(solver, pivot) {
+                continue;
+            }
             let lit = crate::literal::lit(pivot);
             let pos = flush_occurrences(solver, lit);
             if pos > fasteloccs {
@@ -985,6 +989,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
             }
             // Not in kissat: so does a variable frozen for assumptions (src/assume.rs)
             if pivot_flags.frozen() {
+                continue;
+            }
+            // Not in kissat: nor is a real unknown that is kept (src/guide.rs; off by default)
+            if solver.guide.protect && crate::guide::prefers(solver, pivot) {
                 continue;
             }
             if terminated!(solver, fastel_terminated_1) {
