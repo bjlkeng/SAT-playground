@@ -255,6 +255,28 @@ work is **solver 13** and the RL scheduler on top of it.
   solves). **An arm picked from its first seeds needs fresh seeds before a
   claim**: the gain was +13 of 280 where the arm was picked and +3 of 280 on
   the next four seeds.
+  G.17.6, the lean with the solver's own list, on the 400 cells
+  (2026-11-24/25; beads `d96.14.6`, `d96.14.5`; solver README, "The refined
+  lean with the solver's own list, on the 400 cells"). `--roleread=1` (**off
+  by default**) takes the list from the solver's own free-choice reading
+  instead of a role file: the members of pick-one choices, the free variables
+  and the solver's own variables are preferred. Its list is the role file's
+  on 82 of the 106 cells of the experiment (pyramid and oisc differ). **On
+  the 400 cells the lean loses**: 666 solved runs against 689 of 800 at seeds
+  2 and 3 (range for luck −40 to −7), work PAR-2 1.16; on eight fresh seeds
+  under work limits on the 41 cells that changed sides, 161 against 218 of
+  328 (−94 to −21). The loss is on the cells whose only real unknowns are
+  free inputs (168 cells, 281 v 304; the HWMCC `oski` cells 16 v 24, and 34
+  v 56 on the fresh seeds). With pick-one choices it is level at two seeds,
+  and the pyramid's two-seed gain (31 v 28 of 40) does not hold (25 v 32 of
+  56). The 106 cells of the experiment: 154 v 154. **Never lean toward free
+  inputs alone.** **The owner closed the nudging line on 2026-11-25** (a dead
+  end): every nudge stays off, the code stays as options, and the epics
+  `d96.14` (guidance hooks) and `d96.15` (nudges from the other readings:
+  numbers, counts, circuits, parity, frames) are closed. The leans of
+  `d96.15` and the rule "the count with the fewest candidates left decides
+  next" (`d96.14.4`) were **never measured**: treat them as untried, not as
+  refuted.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode

@@ -12032,6 +12032,328 @@ Arm names in the table: `bias-mild`, `bias-mid`, `bias-strong` (the lean),
 `allyes`, `allno`, `cause20`, `front`, `bump2`; `@new` marks the refined
 runs and `@pl` the pyramid runs with the placements preferred.
 
+## The refined lean with the solver's own list, on the 400 cells (2026-11-24/25; beads `SAT-playground-d96.14.6`, `SAT-playground-d96.14.5`; the nudging line closed)
+
+### In plain words
+
+**The question.** One nudge of the section before helped a little on 106
+picked formulas: the refined mild lean. It took its list of real unknowns
+from a file made beforehand by our Python reader, and on two families from
+names given by hand. A solver in a competition gets no such file. The owner
+asked on 2026-11-24 for the version where the solver makes the list itself,
+and for a run of it on all 400 formulas of 2025.
+
+A few words first, as before. A *real unknown* is a variable that nothing
+else computes: one option of a pick-one choice, or a free input. *Bookkeeping*
+is every other variable of the formula: it only writes the rules down. The
+solver also adds *helpers of its own* while it runs. The *reading* is the
+step where the solver sorts the formula's variables into these kinds before
+its first guess. By default it already runs on every formula it can (since
+2026-11-12, for the local search over the choices), so handing its list on
+costs no extra work. A *seed* is one shuffle of the solver's random choices;
+the same formula at two seeds is two different runs.
+
+**What was done.**
+
+1. The reading now hands its sorted list to the lean instead of throwing it
+   away. A new switch turns that on (`--roleread=1`); it is off by default
+   and does nothing unless the lean (or the count of guesses by kind) is on.
+2. With it, the lean prefers three kinds: the members of pick-one choices,
+   the free variables, and every variable the solver made itself. It pushes
+   down the rest of the formula: definitions, small gates and one-way
+   helpers. No file and no setting from outside is read.
+3. When there is nothing to tell apart, the lean stays off, the search is the
+   plain one, and the last line says why.
+4. Tests on small formulas, and the same search with the switch off.
+5. The solver's list was compared with the files of the 106 formulas of the
+   experiment.
+6. The lean ran against the plain solver on all 400 formulas, at seeds 2 and
+   3, 30 minutes a run, in one run of the harness: 1,600 runs. Every model
+   was checked. Every proof went to the proof checker; 100 of them ran past
+   its time limit and stay unverified.
+7. Fresh seeds (4 to 11) under work limits on the 41 formulas where the
+   outcome changed.
+
+**A small example.** The window seat again: Ann, Bob, Cy or Dee gets it.
+
+| variable | meaning | the file said | the solver's own reading says | the lean |
+|---|---|---|---|---|
+| A, B, C, D | Ann, Bob, Cy or Dee gets the seat | real unknown | members of a pick-one choice ("exactly one of A, B, C, D") | preferred |
+| T | the seat is taken | bookkeeping | a definition (T is "A or B or C or D") | pushed down |
+| H | Ann or Bob: a helper the solver invents during the run | not in the file (it does not exist yet) | made by the solver | preferred |
+
+Here the solver's list is the file's list. Now take a formula with no
+pick-one choice at all, a circuit: inputs x and y, and a gate g that is
+"x and y", and rules that are all about g. The reading calls x and y real
+unknowns (nothing computes them) and g bookkeeping. The plain solver guesses
+on g, the thing the rules talk about. The lean pushes it back onto x and y.
+
+**The result.** The lean with the solver's own list loses: 666 solved runs
+against 689 of 800 on the 400 formulas, with 1.16 times the work, and fresh
+seeds confirm it. In the 400-formula run the whole loss is on formulas whose
+only real unknowns are free inputs.
+
+| formulas | runs | plain solver | lean | difference (range for luck) |
+|---|---|---|---|---|
+| all 400 | 800 | 689 | 666 | −23 (−40 to −7) |
+| lean on, real unknowns only free inputs (168 formulas) | 336 | 304 | 281 | −23 (−35 to −12) |
+| lean on, some pick-one choices (134 formulas) | 268 | 202 | 203 | +1 (−10 to +13) |
+| lean off: no reading, or nothing to tell apart (98 formulas) | 196 | 183 | 182 | −1: the same search, one run cut by the clock |
+
+The range for luck: the formulas are drawn again with replacement 2,000
+times, and a formula keeps its two seeds together (two seeds of one formula
+are not two formulas).
+
+The 106 formulas of the experiment, all among those where the lean is on:
+154 against 154. The family that loses most is hardware model checking
+(`oski`): 16 against 24, with 2.9 times the work. The pyramid gains a little:
+31 against 28 of 40, with 0.82 of the work, now with its placements preferred.
+
+The fresh seeds settle it. On the 41 formulas where the outcome changed at
+seeds 2 and 3, eight new seeds each under fixed work limits (so the host's
+load plays no part), the lean solves 161 runs against 218 of 328 (range for
+luck −94 to −21), with 1.39 times the work. The plain solver solves the
+hardware formulas in all 56 runs, the lean in 34 (2.3 times the work where
+both solve), and the pyramid's small gain does not hold (25 against 32 of
+56).
+
+**What it means.** The lean should not go on by default. The solver can make
+the experiment's list by itself, but leaning toward free inputs hurts where
+they are the only real unknowns, and that is most of the formulas outside
+the 106. It is known that a solver made to guess only on a circuit's inputs
+can need far more steps than one free to guess anywhere (Järvisalo and
+Junttila, "Limitations of restricted branching in clause learning",
+Constraints 2009); a lean is a milder push the same way. Where there are
+pick-one choices the lean is level at seeds 2 and 3, but on fresh seeds the
+pyramid, a family with choices, loses too; and the experiment's small gain
+(+26 of 704 runs, +9 of 352 on fresh seeds) does not show with the solver's
+own list (154 against 154 on the same 106 formulas).
+
+**Caveats.**
+- Two seeds under a 30-minute limit: a solve near the limit can flip by
+  timing alone. The fresh seeds run under work limits, so the host's load
+  plays no part there, and they confirm the loss; they cover only the 41
+  formulas that changed sides.
+- The split by kind (choices or only inputs) was read off this run, so it is
+  a hypothesis: a lean that switches on only where the reading finds
+  pick-one choices would need fresh seeds of its own before any claim.
+- Answers: no formula got two answers, and every model was checked (593
+  runs). Of the 762 runs that ended with "no solution", the proof checker
+  (drat-trim) accepted 662 proofs and ran past its time limit on 100, 22 to
+  28 an arm. Those 100 are unverified: not shown right, not shown wrong.
+  Among them are all 16 runs of the four oisc formulas, where the control
+  split's proofs have never been verified by anyone (bead
+  `SAT-playground-d96.8.9`). The fresh-seed runs wrote no proofs: there
+  only the models were checked.
+
+**The decision.** On 2026-11-25 the owner read these numbers, called nudging
+a dead end and closed the line. Every nudge stays off (bead
+`SAT-playground-d96.14.7`); the code stays in the solver as options, switched
+off. Closed with it: the epic on guidance hooks (`SAT-playground-d96.14`) and
+the epic on nudges from the other readings (`SAT-playground-d96.15`: numbers,
+counts, circuits, parity, frames). **Those other nudges were never measured**,
+and neither was the rule "the group with the fewest candidates left decides
+next" (`d96.14.4`): they are closed because the technique lost here, not
+because each was tried. What to keep if the idea comes back: never lean toward
+free inputs alone, never lower the variables the solver makes itself, and run
+fresh seeds before a claim.
+
+### What was built
+
+| option | default | what it does |
+|---|---|---|
+| `roleread` | 0 | the roles come from the solver's own free-choice reading (`src/freeread.rs`), not from `SAT_ROLE_FILE`: `choice`, `free`, `def`, `gate`, `helper`; a variable the formula fixes, or one in no clause, is `unlisted`, and a variable the solver makes is `new`, as before. For `--rolecount=1` and `--guide=1`; nothing without them. With `--guide=1` the preferred roles are `choice,free,new` and the roles with a preferred value `choice` (used only by `--guidephase`); `SAT_ROLE_FILE`, `SAT_GUIDE_ROLES` and `SAT_GUIDE_VALUE_ROLES` are not read. |
+
+- `src/structure.rs`: the reading runs when the walk, its report or the roles
+  want it (on the stock path too, then for the roles alone). Its role table is
+  handed to `src/roles.rs` as it is, after the walk was built from it: no copy
+  and no work.
+- `src/roles.rs`: `reserve` reads no file with `roleread`; `install` maps the
+  reading's roles to role ids and keeps the rest as for a file (the variables
+  the structure passes and the solver make are `new`).
+- `src/guide.rs`: the fixed lists; the lean stays off when the formula has no
+  reading, no `choice` or `free` variable, or no `def`, `gate` or `helper`.
+- `src/assume.rs`: the incremental test mode turns `roleread` off with the
+  other options it cannot run with.
+
+The lines it prints: at the start `c guide: N preferred variables (roles
+choice,free,new), M with a preferred value (roles choice)`; at the exit the
+usual `c guide list=...` line ending with `read=1 choice=C free=F def=D
+gate=G helper=H`, or `c guide off reason=unread|no-unknowns|no-bookkeeping`
+(with the counts when there was a reading); `c roles: the formula has no
+free-choice reading, so no roles` when there is none.
+
+Where the reading is missing on the 400 cells (the `reading=` field of the
+walk's exit line, seed 2): 48 cells a structure pass settles before the
+reading starts (`skipped`: rook, clique colouring, round robin, `homer`,
+`arles` and more, all without a solution), 10 cells need more than the
+reading's limit (`budget`: the GP cells take 13G to 44G units, the limit is
+10G units, `freereadticks` 625M ticks at 16 units a tick), 7 cells are too
+large to hold (`overflow`), 1 the reading itself refutes. On 31 more the
+reading finds no bookkeeping (`no-bookkeeping`). One cell
+(`17.normalised`) stops on memory after 35 s in every arm, the plain ones
+too: an allocation of 4 GiB fails under the 16 GB limit while the file is
+read (bead `SAT-playground-qu3.3`). That leaves 302 cells where the lean is
+on, at both seeds.
+
+### Checked
+
+- Six tests in `tests/guide.rs` (`cargo test --release`: 408 passed, 0 failed;
+  the smoke test 9 of 9). They build formulas of pick-one groups and AND
+  definitions that the reading reads exactly as built
+  (`groups_and_definitions`: 600 choices and 500 definitions, one with a model
+  and one without, 8,600 and 6,100 conflicts): the reading's counts are the
+  roles, its choices and free variables the preferred ones, the lean acts
+  (scores raised, queue moves) and the answers hold. Alone the switch changes
+  nothing; with the lean and no strength set the search is the old one, to
+  the tick on the shipped path and apart from the reading's work on the
+  stock path; on a formula of groups alone the lean stays off
+  (`no-bookkeeping`), on one of units alone too (`no-unknowns`), and with the
+  reading out of its work limit or the formula past its clause limit
+  (`unread`); the count by role takes the reading's roles and reads no file.
+- The same search with the switch off: `tools/as_baseline.py run --set
+  default` (the shipped defaults on the 100 medium cells, 10G of work each)
+  with the committed build (`28836a73`) and the new one (`250a1785`), then
+  `compare`: 100 of 100 cells identical in every exact field (answer, work
+  clock, counters, model, proof and its sidecars). The same check on all 400
+  cells (`--set full`, each cell under its own work budget) was started and
+  **stopped before its end** on 2026-11-25, when the owner closed the line.
+  The tool writes its table only at the end, so what can be compared is what
+  each finished cell left on disk (`log/guide-lean-2026-11-24/offcheck_partial.py`):
+  356 of the 400 cells had ended in both builds, and all 356 are identical in
+  the text the table hashes (answer, work clock, counters, report rows) and
+  in the model lines (112 cells with a model); the 321 of them with a log
+  line also in exit code and proof size. Not compared: the proofs' hashes,
+  and the other 44 cells.
+- Where the lean stays off in the 400-cell run, the search is the plain one:
+  91 of 91 cells that both arms solve at seed 2 with the same work and
+  conflicts, 91 of 92 at seed 3; the other one (`VanDerWaerden_pd_2-3-22_462`)
+  is the same search cut by the clock (solved at 1,779 s, timed out at
+  1,800 s with 99.8% of the conflicts).
+- Codex review: round 1 (the code), no findings. The rounds on this write-up
+  and its tables are in beads `d96.14.5` and `d96.14.6`.
+
+### The lists against the experiment's files
+
+`log/guide-lean-2026-11-24/compare_lists.py` puts each role file's counts by
+role (its header) beside the solver's reading
+(`benchmarks/rl/freeread_2025.tsv`, whose work column counts units):
+`benchmarks/rl/guide_lean_lists_2025.tsv`. The 400-cell run's exit lines give
+the same counts on every one of the 106 cells.
+
+| family | cells | the file preferred | the solver prefers |
+|---|---|---|---|
+| ten families (lockchart, oddball, timetable, case, ...) | 82 | choices and free variables | the same, on every count |
+| Bel's Pyramid | 20 | the bits of the stored labels, 360 to 1,834 a cell (the number reader, `--order`) | the placements and free variables, 5,965 to 123,445 |
+| oisc | 4 | the control word, named by hand: 8 to 15 bits | 13,431 to 33,874 choices and free variables |
+
+The counts are compared kind by kind, not variable by variable; the solver's
+reading is the method of the Python reader that made the files.
+
+### The 400-cell run
+
+Frozen full folder `solver/13-j43-roleread-snapshot` (sha256 `250a1785`, the
+reviewed build, committed as `243187c`), `tools/feature_ablation.py`, arms
+`base2`, `lean2`, `base3`, `lean3` (lean: `--guide=1 --roleread=1
+--guidebump=200 --guidefront=1`), 32 jobs at 16 GB, 1,800 s, answers checked,
+2026-11-24 18:03 to 2026-11-25 about 07:00. Run folder
+`log/abtest-guide-lean-400-2026-11-24-17-57-55`, script
+`log/guide-lean-2026-11-24/launch.sh`, report
+`log/guide-lean-2026-11-24/report400.py` (output `report400.txt`), rows
+`benchmarks/rl/guide_lean_400_2025.tsv`.
+
+| seed | plain solved | lean solved | gained, lost | range for luck | wall PAR-2 lean/plain | work PAR-2 | work where both solve (geomean) |
+|---|---|---|---|---|---|---|---|
+| 2 | 344 | 330 | 8, 22 | −25 to −4 | 1.155 | 1.159 | 1.019 |
+| 3 | 345 | 336 | 8, 17 | −19 to 0 | 1.146 | 1.164 | 1.162 |
+
+Answers checked (models and proofs, `ok` / checker past its time limit):
+plain 317/27 and 317/28, lean 307/23 and 314/22; no failure, no formula with
+two answers. The 100 past the limit are all proofs and stay unverified. The harness's own verdict lines agree (tick PAR-2 1.159 at
+seed 2).
+
+By family, the cells where the lean is on, both seeds (families of 14 runs or
+more, and every family that moved):
+
+| family | runs | plain | lean | work PAR-2 lean/plain |
+|---|---|---|---|---|
+| oski (hardware model checking) | 24 | 24 | 16 | 2.92 |
+| oddball | 40 | 24 | 21 | 1.38 |
+| lockchart | 24 | 14 | 11 | 1.07 |
+| argumentation | 16 | 11 | 9 | 1.24 |
+| singletons | 26 | 20 | 18 | 1.29 |
+| grs, gm-sparrc, goldcrest, circuit-multiplier | 26 | 26 | 18 | 1.66 to 3.14 |
+| break-scheduling, itc99, hwmc-step-transition, multiplier-16x16 | 72 | 72 | 72 | 1.37 to 1.65 |
+| case | 20 | 20 | 20 | 0.74 |
+| timetable | 24 | 11 | 13 | 0.91 |
+| bp (Bel's Pyramid) | 40 | 28 | 31 | 0.82 |
+
+By the share of pick-one choices among the variables the reading names (lean
+on): none, 168 cells, 304 against 281 runs (−23; −35 to −12); under a tenth,
+55 cells, 78 against 80; a tenth to a half, 45 cells, 73 against 75; more,
+34 cells, 51 against 48. By the share of real unknowns: under a tenth, 103
+cells, 182 against 166 (−16); a tenth to a half, 106 cells, 168 against 172;
+more than half, 93 cells, 156 against 146.
+
+### Fresh seeds on the cells that changed sides
+
+`log/guide-lean-2026-11-24/make_jobs.py` takes the 41 cells of
+`changed_cells.txt` (gained or lost at seed 2 or 3) and gives each a work
+limit, the same for both arms and every seed: four times the most work any
+solved run of the cell took in the 400-cell run, at most the work of 1,800 s
+at the cell's rate there, at least 2G (the count engine's rule, "Why it
+lost"). Seeds 4 to 11, the frozen build, every model checked by the nudge
+experiment's `check_model.py`, no proofs; its `batch.py` on 32 cores,
+2026-11-25 08:40 to about 16:50. `tools/guide_report.py collect`: 656 runs,
+0 faults (no wrong model, no UNKNOWN before the limit, no formula with two
+answers). Rows `benchmarks/rl/guide_lean_fresh_2025.tsv`, report
+`log/guide-lean-2026-11-24/f1_report.txt`.
+
+| cells | runs | plain | lean | difference (range for luck) | PAR-2 lean/plain | work where both solve |
+|---|---|---|---|---|---|---|
+| the 41 that changed sides | 328 | 218 | 161 | −57 (−94 to −21) | 1.393 (1.18 to 1.69) | 1.319 (1.06 to 1.65) |
+
+| family | runs | plain | lean | PAR-2 lean/plain |
+|---|---|---|---|---|
+| oski (hardware model checking), 7 cells | 56 | 56 | 34 | 3.19 |
+| bp (Bel's Pyramid), 7 cells | 56 | 32 | 25 | 1.10 |
+| oddball, 4 cells | 32 | 21 | 17 | 1.66 |
+| singletons (`fixedbandwidth`), gm-sparrc, goldcrest, grs | 32 | 28 | 1 | 1.56 to 4.26 |
+| hcp, 2 cells | 16 | 11 | 7 | 1.30 |
+| mp1, 2 cells | 16 | 11 | 15 | 0.28 |
+| timetable, 2 cells | 16 | 4 | 7 | 0.98 |
+| kakuro, 1 cell | 8 | 3 | 6 | 0.67 |
+| argumentation, circuit-multiplier, dltm, factoring, g2-t, lockchart, valves, vdw (12 cells) | 96 | 52 | 49 | 0.82 to 1.26 |
+
+The cells were picked because they changed sides, most of them by a loss (22
+and 17 cells lost at seeds 2 and 3, 8 and 8 gained), so a loss that was luck
+would come out about level here; it comes out larger. On the two
+VanDerWaerden cells the lean stays off (no bookkeeping), and their 32 runs
+take the same work under both arms at every seed: the same search.
+
+### Reproduce
+
+```bash
+# from the repository's root
+(cd solver/13-kissat-rs && cargo test --release --test guide)
+# the lean on one formula, the solver's own list
+solver/13-kissat-rs/target/release/sat-solver --guide=1 --roleread=1 --guidebump=200 --guidefront=1 CELL.cnf
+# the same search with the switch off
+python3 tools/as_baseline.py run --solver OLD --set default --out A --jobs 14 --cores 0,...,13
+python3 tools/as_baseline.py run --solver NEW --set default --out B --jobs 14 --cores 18,...,31
+python3 tools/as_baseline.py compare A B
+# a run of --set full stopped before its end: the cells that ended in both
+python3 log/guide-lean-2026-11-24/offcheck_partial.py A B
+python3 log/guide-lean-2026-11-24/compare_lists.py
+# the 400-cell run, its report, and the fresh seeds
+SNAP=solver/13-j43-roleread-snapshot bash log/guide-lean-2026-11-24/launch.sh
+python3 log/guide-lean-2026-11-24/report400.py log/abtest-guide-lean-400-2026-11-24-17-57-55
+python3 log/guide-lean-2026-11-24/make_jobs.py log/abtest-guide-lean-400-2026-11-24-17-57-55 F1 --seeds 4,5,6,7,8,9,10,11
+python3 log/guide-nudges-2026-11-23/batch.py log/guide-lean-2026-11-24/jobs_F1.tsv log/guide-lean-2026-11-24/run-F1 --cores 0-15,18-33
+python3 tools/guide_report.py collect F1 --dir log/guide-lean-2026-11-24 --out log/guide-lean-2026-11-24/results_F1.tsv
+python3 tools/guide_report.py boot log/guide-lean-2026-11-24/results_F1.tsv --base base --arms lean
+```
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

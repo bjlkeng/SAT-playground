@@ -1,0 +1,107 @@
+cell	group	kind	file_options	file_roles	file_preferred	file_choice_free	solver_status	solver_choice_free	same_reading	same_list
+bp4_CSO_AM_IXA_LP	pyramid	easy	--order --name 1-28812=placement	number,free,choice	1303	380	read	32907	no	no
+sudoku-N30-12	sudoku	easy		choice,number,free,control	95837	95837	read	95837	yes	yes
+dislog-a14	other	hard		choice,number,free,control	1605	1605	read	1605	yes	yes
+oddball_53_5_tto_zp	oddball	hard		choice,number,free,control	31018	31018	read	31018	yes	yes
+Break_12_50	break	easy		choice,number,free,control	3987	3987	read	3987	yes	yes
+6s268r_Iter94	other	easy		choice,number,free,control	133637	133637	read	133637	yes	yes
+oddball_54_5_tto_zp	oddball	hard		choice,number,free,control	31953	31953	read	31953	yes	yes
+bp4_BC012_CSO_AM_IXA	pyramid	easy	--order --name 1-28812=placement	number,free,choice	511	59	read	30426	no	no
+6s299b685_Iter22	other	easy		choice,number,free,control	30452	30452	read	30452	yes	yes
+planning-pathways17	other	easy		choice,number,free,control	30541	30541	read	30541	yes	yes
+spg_300_300	other	easy		choice,number,free,control	351806	351806	read	351806	yes	yes
+oddball_80_5_tto_zp	oddball	hard		choice,number,free,control	59227	59227	read	59227	yes	yes
+oddball-tto	oddball	easy		choice,number,free,control	30250	30250	read	30250	yes	yes
+bp4_BC012_AM_FPBEQ_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	742	418	read	23389	no	no
+SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50	timetable	easy		choice,number,free,control	26036	26036	read	26036	yes	yes
+QG7-gensys-icl006.sat05-3132	other	easy		choice,number,free,control	414	414	read	414	yes	yes
+shuffling-1-s1769330284-of-bench-sat04-422.u	other	easy		choice,number,free,control	2018	2018	read	2018	yes	yes
+x9-10070.sat	case	easy		choice,number,free,control	327	327	read	327	yes	yes
+SC25_Timetable_C_481_E_49_Cl_32_D_7_T_58	timetable	easy		choice,number,free,control	32273	32273	read	32273	yes	yes
+itc2021-late10	itc2021	hard		choice,number,free,control	15669	15669	read	15669	yes	yes
+reconf-queen20	reconf	hard		choice,number,free,control	8000	8000	read	8000	yes	yes
+bp4_AM_IXA_FPBLE	pyramid	easy	--order --name 1-28812=placement	number,free,choice	816	364	read	30786	no	no
+oddball_69_5_tto_zp	oddball	easy		choice,number,free,control	46184	46184	read	46184	yes	yes
+lock-group1-L200-K289-p8d4j1.no-30f6	lockchart	hard		choice,number,free,control	9248	9248	read	9248	yes	yes
+bp4_TCO_CSO_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	360	18	read	22770	no	no
+6s299b685_Iter30	other	easy		choice,number,free,control	418492	418492	read	418492	yes	yes
+lock-group2-rnd0.3-L19-K38-P8D4-3958	lockchart	easy		choice,number,free,control	1216	1216	read	1216	yes	yes
+case6	case	hard		choice,number,free,control	401	401	read	401	yes	yes
+lock-group2-rnd0.3-L19-K38-P8D4-3cda	lockchart	easy		choice,number,free,control	1216	1216	read	1216	yes	yes
+gto_p60c238	other	easy		choice,number,free,control	219	219	read	219	yes	yes
+case10	case	easy		choice,number,free,control	405	405	read	405	yes	yes
+oddball_51_5_tto_zp	oddball	hard		choice,number,free,control	28576	28576	read	28576	yes	yes
+manthey_single-ordered-initialized-w42-b8	other	easy		choice,number,free,control	934	934	read	934	yes	yes
+oddball_67_5_tto_zp	oddball	hard		choice,number,free,control	44137	44137	read	44137	yes	yes
+vmpc-28	other	hard		choice,number,free,control	1568	1568	read	1568	yes	yes
+lock-group2-rnd0.3-L18-K36-P8D4-4c03	lockchart	easy		choice,number,free,control	1152	1152	read	1152	yes	yes
+oddball_26_4_ttf	oddball	hard		choice,number,free,control	3471	3471	read	3471	yes	yes
+case7	case	easy		choice,number,free,control	375	375	read	375	yes	yes
+lock-group2-rnd0.3-L19-K38-P8D4-5d62	lockchart	easy		choice,number,free,control	1216	1216	read	1216	yes	yes
+bp4_CSO_IXA_ZR	pyramid	easy	--order --name 1-28812=placement	number,free,choice	360	18	read	22770	no	no
+Break_12_30	break	easy		choice,number,free,control	3918	3918	read	3918	yes	yes
+hid-uns-enc-6-1-0-0-0-0-14492	other	easy		choice,number,free,control	1152	1152	read	1152	yes	yes
+em-8-4-5	em	easy		choice,number,free,control	1340	1340	read	1340	yes	yes
+summle_X8638_steps7_I1-2-2-4-4-8-25-100	other	easy		choice,number,free,control	1937	1937	read	1937	yes	yes
+bp4_CSO_LP_FPBLE_ZR_YS	pyramid	easy	--order --name 1-28812=placement	number,free,choice	849	437	read	5965	no	no
+case13	case	easy		choice,number,free,control	929	929	read	929	yes	yes
+bp4_LPI_FPBEQ_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	731	350	read	21897	no	no
+bp4_CB_CSO_LP_FPBEQ_FPBLE	pyramid	easy	--order --name 1-28812=placement	number,free,choice	1834	1031	read	19497	no	no
+SC25_Timetable_C_495_E_43_Cl_35_D_7_T_58	timetable	hard		choice,number,free,control	33087	33087	read	33087	yes	yes
+oddball_56_5_tto_zp	oddball	easy		choice,number,free,control	33691	33691	read	33691	yes	yes
+Break_triple_12_20	break	easy		choice,number,free,control	3408	3408	read	3408	yes	yes
+reconf10_70_queen14_2	reconf	easy		choice,number,free,control	13328	13328	read	13328	yes	yes
+lock-group1-L210-K303-p8d4j1.no-8900	lockchart	hard		choice,number,free,control	9696	9696	read	9696	yes	yes
+SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50	timetable	easy		choice,number,free,control	26088	26088	read	26088	yes	yes
+SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58	timetable	hard		choice,number,free,control	33117	33117	read	33117	yes	yes
+bp4_BC012_CSO_FPBEQ_FPBLE_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	883	559	read	23282	no	no
+timetable-496	timetable	hard		choice,number,free,control	29026	29026	read	29026	yes	yes
+reconf10_68_queen14_1	reconf	easy		choice,number,free,control	12936	12936	read	12936	yes	yes
+lock-group3-L13-K26-p4d3j1.norm-9697	lockchart	hard		choice,number,free,control	312	312	read	312	yes	yes
+bp4_BC012_IXA_LPI_FPBLE	pyramid	hard	--order --name 1-28812=placement	number,free,choice	797	317	read	20063	no	no
+bp4_TCO_CSO_IXA_LP_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	767	253	read	25049	no	no
+anbul-dated-5-15-u	other	easy		choice,number,free,control	63795	63795	read	63795	yes	yes
+SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50	timetable	hard		choice,number,free,control	28955	28955	read	28955	yes	yes
+SC25_Timetable_C_498_E_46_Cl_34_D_7_T_50	timetable	hard		choice,number,free,control	30048	30048	read	30048	yes	yes
+SAT_dat.k100-24_1_rule_2	other	easy		choice,number,free,control	79429	79429	read	79429	yes	yes
+lock-group3-L15-K29-p4d3j1.norm-b99b	lockchart	hard		choice,number,free,control	348	348	read	348	yes	yes
+ITC2021_Early_12	itc2021	easy		choice,number,free,control	14399	14399	read	14399	yes	yes
+reconf10_73_queen13_2	reconf	easy		choice,number,free,control	11999	11999	read	11999	yes	yes
+case17	case	easy		choice,number,free,control	368	368	read	368	yes	yes
+bp4_IXA_FPBEQ_ZR	pyramid	easy	--order --name 1-28812=placement	number,free,choice	683	341	read	22836	no	no
+SC25_Timetable_C_481_E_48_Cl_32_D_7_T_58	timetable	easy		choice,number,free,control	32241	32241	read	32241	yes	yes
+ITC2021_Middle_9	itc2021	easy		choice,number,free,control	10480	10480	read	10480	yes	yes
+bp5_CSO	pyramid	easy	--order --name 1-120285=placement	number,free,choice	1084	36	read	123445	no	no
+case16	case	easy		choice,number,free,control	395	395	read	395	yes	yes
+em_11_3_4_cmp	em	easy		choice,number,free,control	4825	4825	read	4825	yes	yes
+sted2-219	other	easy		choice,number,free,control	4237	4237	read	4237	yes	yes
+break-16-70	break	easy		choice,number,free,control	8128	8128	read	8128	yes	yes
+lock-group1-L190-K276-p8d4j1.no-d2af	lockchart	easy		choice,number,free,control	8832	8832	read	8832	yes	yes
+bp4_BC012_AM_IXA_LPI	pyramid	easy	--order --name 1-28812=placement	number,free,choice	634	107	read	20181	no	no
+bp4_BC012_CSO_IXA_LP	pyramid	easy	--order --name 1-28812=placement	number,free,choice	1267	344	read	32603	no	no
+SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50	timetable	easy		choice,number,free,control	26219	26219	read	26219	yes	yes
+lock-group3-L11-K23-p4d3j1.norm-dbb4	lockchart	hard		choice,number,free,control	276	276	read	276	yes	yes
+bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	861	541	read	23543	no	no
+oddball_57_5_tto_zp	oddball	easy		choice,number,free,control	34482	34482	read	34482	yes	yes
+sudoku-N30-16	sudoku	hard		choice,number,free,control	95601	95601	read	95601	yes	yes
+sudoku-N30-23	sudoku	hard		choice,number,free,control	94646	94646	read	94646	yes	yes
+Break_triple_14_48	break	easy		choice,number,free,control	5432	5432	read	5432	yes	yes
+sudoku-N30-15	sudoku	easy		choice,number,free,control	96027	96027	read	96027	yes	yes
+ITC2021_Early_9	itc2021	easy		choice,number,free,control	10763	10763	read	10763	yes	yes
+oddball_19_4_ttf	oddball	easy		choice,number,free,control	1885	1885	read	1885	yes	yes
+SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50	timetable	easy		choice,number,free,control	26729	26729	read	26729	yes	yes
+lock-group2-rnd0.3-L19-K38-P8D4-f197	lockchart	easy		choice,number,free,control	1216	1216	read	1216	yes	yes
+oddball_24_4_ttf	oddball	easy		choice,number,free,control	2984	2984	read	2984	yes	yes
+bp4_TCO_IXA_FPBLE_ZR	pyramid	hard	--order --name 1-28812=placement	number,free,choice	591	249	read	22770	no	no
+oddball_112_5_ttf	oddball	easy		choice,number,free,control	57376	57376	read	57376	yes	yes
+bp4_BC012_CSO_IXA_LP_FPBLE	pyramid	easy	--order --name 1-28812=placement	number,free,choice	1556	633	read	32934	no	no
+case9	case	easy		choice,number,free,control	331	331	read	331	yes	yes
+SC25_Timetable_C_495_E_50_Cl_33_D_7_T_50	timetable	hard		choice,number,free,control	29035	29035	read	29035	yes	yes
+sudoku-N30-28	sudoku	easy		choice,number,free,control	95537	95537	read	95537	yes	yes
+bp4_CB_LP_FPBLE	pyramid	easy	--order --name 1-28812=placement	number,free,choice	1466	663	read	19025	no	no
+oddball_29_4_ttf	oddball	hard		choice,number,free,control	3988	3988	read	3988	yes	yes
+lock-group1-L220-K317-p8d4j1.no-fe9b	lockchart	easy		choice,number,free,control	10144	10144	read	10144	yes	yes
+oisc-and-11	oisc	hard	--name 726-736=control	control	11	21246	read	21256	no	no
+oisc-and-12	oisc	hard	--name 787-798=control	control	12	24245	read	24256	no	no
+oisc-and-15	oisc	hard	--name 970-984=control	control	15	33860	read	33874	no	no
+oisc-sll-8	oisc	easy	--name 10-17=control	control	8	13423	read	13431	no	no
