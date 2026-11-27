@@ -277,6 +277,79 @@ work is **solver 13** and the RL scheduler on top of it.
   `d96.15` and the rule "the count with the fewest candidates left decides
   next" (`d96.14.4`) were **never measured**: treat them as untried, not as
   refuted.
+- **Memory-outs under the 16 GB cap (epic `SAT-playground-qu3`, 2026-11-25/26)** —
+  two cells of 2025 die on memory in every run, and the owner asked to try to
+  fix them (solver README, "Memory: the two formulas that die on the 16 GB
+  limit"). **No formula is gained under the cap.** `17.normalised` (117.3M
+  variables, 315.6M clauses) cannot load: the per-variable tables are 101
+  bytes a variable (11.0 GiB) and its clauses and watches 6.0 GiB with no
+  waste at all, about 17 GiB against a limit of 15.63 GiB (the harness's
+  16,000 MiB; `tools/as_baseline.py` sets 16 GiB). **With 30 GB, the
+  competition's limit, it is solved in 177 s** with no conflict, like its
+  eleven siblings, the model checked, peak 24.5 GiB of address space (one
+  run, on the owner's go of 2026-11-26 for the two formulas).
+  `pj2002_k500` died in the congruence pass (its gate list doubling from 1.5
+  to 3 GiB). Under 16 GB it no longer does, and stays unsolved (6,713
+  conflicts in 30 minutes; its solved siblings need 20K to 230K). With 30 GB
+  the pass runs (17.1M of 44.9M variables merged), the run makes 30,152
+  conflicts in 20 minutes, and then it dies in variable elimination: the
+  clause store doubling from 8 to 16 GiB with 23.5 GiB in use (bead `qu3.4`,
+  not built). **Whether our runs get 30 GB is the owner's open call; the
+  standing rule is 16 GB.**
+  Built: `src/room.rs` (not in kissat). The limit is the process's
+  address-space limit (`RLIMIT_AS`, what the harness's `--mem-mb` sets) or
+  the new option `--memlimit` (MB, for a limit the solver cannot see); in use
+  is `VmSize`; a sixteenth of the limit is kept free. The congruence pass
+  asks it: before it starts for everything that grows with the formula,
+  while it runs for what grows with its gates (the gate list, the hash table,
+  the gates' small buffers; the gates may only have what lies above the room
+  of the first question), and before the clauses get their watches back.
+  Refused, it does not start, or ends at once and keeps what it merged, and
+  stays off for the run (`c room refused=... congruence=off ...` at the
+  exit; `--memwhole=0` asks only as the tables grow, for tests). A run that
+  is not near its limit is the old run step for step: under work budgets
+  the old build and the new give 400 of 400 cells identical in every exact
+  field, and 100 of 100 on the stock path. On the clock (old, old again,
+  new; 1,800 s) 344, 344 and 342 are solved: the same search on every cell
+  both solve, and the two cells lost are solves in the last 2% of the time
+  limit. The new build is half a percent slower at the same work by where
+  its code landed: the same instructions, 0.7% more clock ticks, and equal
+  clock ticks when both builds have the jump switch. (That is the build that
+  was timed, `2d9dce07`. The committed one, `961d5dc6`, has three more
+  changes from the review that act only after a refusal; the same-search
+  check was repeated for it, and its code lands level with the old
+  build's.) **A run on the clock
+  can lose a cell or two to a rebuild alone. For a change that is meant to
+  leave the search alone, the evidence is the same-search check, the
+  instruction counts (`tools/as_counters.py`) and the two builds with the
+  jump switch, not the solved count of one clock run.** Cells that read
+  gigabytes can take several times as long in one arm of a 32-job run with
+  the same work (`5.normalised`: 57 s and 307 s); rerun them old against new
+  on a quiet host before reading anything into it. **Only this pass asks;
+  everything else still dies when it cannot grow.** Rules learned (eleven
+  review rounds; seven built a formula for a place that did not ask yet or
+  that took room promised to another, two found a loop that went on after
+  the refusal): **a pass that asks for memory has to ask before it starts for what
+  grows with the formula, and as it grows for what grows with its own
+  findings (they can be the square of the formula), in every step, on top
+  of the room of the first question and never out of it, and end
+  every loop at once when refused (count what is still asked for after the
+  stop and make the tests fail on it: the exit line's `late` field); the
+  limit is the process's, helper solvers included, and is set right after
+  the options are parsed; test it under real address-space limits swept
+  megabyte by megabyte against the run without the pass** (`tests/room.rs`;
+  a sweep in steps of 4 MB missed a window of 2 MB). An estimate that is too generous
+  refuses passes that fit: before a 400-cell run, run the largest working
+  cell near the limit (`oisc-subrv-and-nested-15`, peak 11.91 GiB) old
+  against new. While a formula is read the solver holds about 1.4 times what
+  the formula needs (doubling tables, and holes the watch lists leave as
+  they grow: 1.7 entries held for each one in use). **Three tools set three
+  limits for "16 GB"** (the harness 16,000 MiB, `as_baseline.py` 16 GiB, the
+  probe 16,000,000 KB): read the limit off the tool before quoting it.
+  Tools: `log/memory-2026-11-25/probe.py` (memory over time under a limit),
+  `check_model.py` (a model against a formula too large for
+  `tools/verify_sat.py`), `proof_check.py` (a proof through a stopped pass),
+  `run400.sh`, `after400.sh`.
 - **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
   one solver can be asked again and again under temporary values ("assume
   these bits for now"), keeping what it learned (`src/assume.rs`; test mode

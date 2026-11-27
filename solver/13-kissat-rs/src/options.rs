@@ -309,6 +309,13 @@ kissat_options! {
     (lucky, 1, 0, 1, "try some lucky assignments"),
     (luckyearly, 1, 0, 1, "lucky assignments before preprocessing"),
     (luckylate, 1, 0, 1, "lucky assignments after preprocessing"),
+    // Not in kissat: a memory limit the solver is told of (src/room.rs);
+    // 0 leaves the process's own address-space limit as the only one
+    (memlimit, 0, 0, i32::MAX, "memory limit in MB that optional passes keep under (0=process limit)"),
+    // Not in kissat: an optional pass asks for the room of its whole run
+    // before it starts; with 0 it starts on the room of its first tables
+    // and stops part way when the next one does not fit (src/room.rs)
+    (memwhole, 1, 0, 1, "optional passes ask for all their memory before they start"),
     (mineffort, 10, 0, i32::MAX, "minimum absolute effort in millions"),
     (minimize, 1, 0, 1, "learned clause minimization"),
     (minimizedepth, 1000, 1, 1_000_000, "minimization depth"),
@@ -943,9 +950,9 @@ mod tests {
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
         // assumptions), structdivassume (2026-11-18), structnum,
         // structnumticks (2026-11-19), rolecount (2026-11-22), the
-        // thirteen guide* options (2026-11-23, an experiment), and roleread
-        // (2026-11-24)
-        assert_eq!(OPTION_TABLE.len(), 158 + 91);
+        // thirteen guide* options (2026-11-23, an experiment), roleread
+        // (2026-11-24), and memlimit, memwhole (2026-11-25)
+        assert_eq!(OPTION_TABLE.len(), 158 + 93);
     }
 
     #[test]

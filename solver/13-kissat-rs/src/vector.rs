@@ -472,6 +472,19 @@ pub fn release_vectors(solver: &mut Solver) {
     solver.vectors.usable = 0;
 }
 
+/// Not in kissat (src/room.rs): the store given back and taken again at the
+/// same capacity, empty.  For a moment when no list holds anything (the
+/// caller has set every list to the empty one): the holes that lists left
+/// as they grew and were emptied are gone, and what comes next starts at
+/// the front.  The new block is the size of the one just freed, so it takes
+/// no room that was not held before.
+pub fn renew_vectors(solver: &mut Solver) {
+    let capacity = solver.vectors.capacity;
+    release_vectors(solver);
+    solver.vectors.stack.reserve_exact(capacity);
+    solver.vectors.capacity = capacity;
+}
+
 /// Hoisted state for a run of `push_vectors` calls (see the PERF NOTE in
 /// `watch::watch_large_clauses`).  `base`/`len` mirror `solver.vectors.stack`
 /// (`len` is written back with `set_len`), `dec_usable` accumulates the

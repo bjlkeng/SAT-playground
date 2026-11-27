@@ -110,6 +110,21 @@ pub struct Closure {
     condeq: [Vec<LitPair>; 2],
     chain: Vec<u32>, // unsigneds chain; (CHECKING_OR_PROVING)
     gates: Vec<Gate>,
+    /// Not in kissat: the tables found no room for one more gate
+    /// (src/room.rs).  No gate is made from then on, the extraction loops
+    /// end, and the pass keeps what it merged and skips the rest.
+    no_room: bool,
+    /// Not in kissat: bytes of the small buffers of gates (a gate's inputs,
+    /// its entry in the gate list of each input) that were asked for and
+    /// are not used up yet.
+    small_room: u64,
+    /// Not in kissat: the address space that was in use when the pass was
+    /// promised its room, plus the promise (`bytes_for_the_pass`).  The pass
+    /// takes the tables of that promise one stage after the other, while the
+    /// gates grow; the gates may only have what lies above it.
+    floor: u64,
+    /// Not in kissat: the bytes the gates were given above the floor.
+    gate_bytes: u64,
 }
 
 // static void init_closure
@@ -145,6 +160,219 @@ fn init_closure(solver: &mut Solver) -> Closure {
         condeq: [Vec::new(), Vec::new()],
         chain: Vec::new(),
         gates: Vec::new(),
+        no_room: false,
+        small_room: 0,
+        floor: 0,
+        gate_bytes: 0,
+    }
+}
+
+/// Not in kissat: the smallest power of two that is at least `entries` (and
+/// at least 4): the capacity the watch store has when it holds that many.
+fn store_capacity(entries: u64) -> u64 {
+    entries.max(4).next_power_of_two()
+}
+
+/// Not in kissat: how much room the whole pass takes beside its gates, for
+/// the one question before it starts (src/room.rs).
+///
+/// The tables, counted as they are alive together at the worst moment:
+///   - a literal: its list of gates (24 bytes), its representative (4), and
+///     one table of the step at hand (the offsets of the binary-clause
+///     search, 8; a counter of the AND, XOR or ITE search, 4, twice while
+///     the XOR search swaps it): 48 with what is left over;
+///   - a variable: two flags and the work queue: 8;
+///   - a binary clause: the list dense mode takes them into (8 bytes each,
+///     a list that doubles) and, at the end, the last step's own: 24;
+///   - a large clause: a candidate list of 4 to 8 bytes each (the XOR
+///     search's, the ITE search's, the last step's, one at a time), a list
+///     that doubles: 16.
+/// And the watch store.  Dense mode gives it back and the pass fills it
+/// again: with the binary clauses' watches, then with the large clauses
+/// connected by their literals (at most the arena's words less three of
+/// header a clause), and at the end with every watch it holds now and two
+/// more for each merge (at most two merges a variable).  A list that grows
+/// moves to the end of the store and leaves a hole: the stores measured
+/// held 1.7 entries for each one in use (`9.normalised` after parsing,
+/// `pj2002_k500` in this pass), so the entries count twice, rounded up to
+/// the store's next doubling, less what it holds now.  A small block is
+/// copied when it doubles, old and new alive together: half as much again.
+///
+/// This is what the pass takes on formulas as they come, with some to spare
+/// and the reserve of src/room.rs on top; it is not the most it could take.
+/// A formula made for it (every list just past a power of two) leaves up to
+/// twice the holes.  The watches' return, the one step that doubles the
+/// store with the gate tables held, asks again with three times the entries
+/// (`bytes_to_restore_watches`), and there the gates give way.
+fn bytes_for_the_pass(solver: &Solver) -> u64 {
+    let lits = solver.lits() as u64;
+    let vars = solver.vars as u64;
+    let binaries = solver.statistics.clauses_binary;
+    let large = solver.statistics.clauses_irredundant + solver.statistics.clauses_redundant;
+    let words = solver.arena.words().len() as u64;
+    let tables = 48 * lits + 8 * vars + 24 * binaries + 16 * large;
+    let held = (solver.vectors.stack.len() as u64).saturating_sub(solver.vectors.usable);
+    let connected = words.saturating_sub(3 * large);
+    let entries = (held + 4 * vars).max(2 * binaries + connected);
+    let store = 4 * store_capacity(2 * entries);
+    // the last doubling copies a block that is not large yet (half of
+    // `store`), old and new alive together
+    let store = if store / 2 >= LARGE_BLOCK { store } else { store + store / 2 };
+    tables + store.saturating_sub(4 * solver.vectors.capacity() as u64)
+}
+
+/// Not in kissat: the bytes of the tables the pass sets up before its first
+/// gate, and no more: per literal a list of gates (24 bytes), a
+/// representative and one counter (4 each); per variable a flag; and the
+/// list dense mode takes the binary clauses into (8 bytes a clause, a
+/// doubling list).  The question with `--memwhole=0`: the pass then starts
+/// on less room and stops part way when its gates do not fit.  That mode
+/// keeps the gates' own questions honest (tests/room.rs); it does not ask
+/// for the setup tables of the XOR and ITE searches, so under a real limit
+/// it can still die in one of them.
+fn bytes_to_start(solver: &Solver) -> u64 {
+    let lits = solver.lits() as u64;
+    let vars = solver.vars as u64;
+    let binaries = solver.statistics.clauses_binary;
+    lits * (std::mem::size_of::<Vec<GateId>>() as u64 + 8)
+        + vars
+        + binaries * 2 * std::mem::size_of::<LitPair>() as u64
+}
+
+/// Not in kissat: the small buffers are asked for this many bytes at a time.
+const SMALL_STEP: u64 = 1 << 20;
+
+/// Not in kissat: a block of this size or more grows where it is when it
+/// doubles (the allocator maps it by itself), so doubling it takes the
+/// difference; a smaller one may be copied to a new place, which takes the
+/// whole new size while the old block is still there.
+const LARGE_BLOCK: u64 = 64 << 20;
+
+/// Not in kissat: a question for the gates (src/room.rs).  Before the pass
+/// started it was promised the room of everything that grows with the
+/// formula, and it takes that room stage by stage (the XOR search's tables,
+/// the lists of each if-then-else condition, the watches when they come
+/// back).  Gates that grew into the part not taken yet would make one of
+/// those stages fail later, so for them what is in use counts as at least
+/// the promise plus what gates were given before.
+fn ask_for_gates(closure: &Closure, bytes: u64) -> Result<(), (u64, u64)> {
+    crate::room::ask_above(closure.floor.saturating_add(closure.gate_bytes), bytes)
+}
+
+/// Not in kissat: the pass has no room.  It remembers that, with the numbers
+/// for the exit line: the gates held, the bytes asked for, the address space
+/// in use and the limit.
+fn out_of_room(solver: &mut Solver, closure: &mut Closure, wanted: u64, used: u64, limit: u64) {
+    closure.no_room = true;
+    solver.room.gates = closure.gates.len() as u64;
+    solver.room.wanted = wanted;
+    solver.room.used = used;
+    solver.room.limit = limit;
+}
+
+/// Not in kissat: whether the tables can take one more gate of `arity`
+/// inputs.  Three things grow with a gate, and each asks src/room.rs before
+/// it does:
+///   - the list of gates, when it is full (it doubles); its room is taken
+///     at once;
+///   - the hash table, when it is full (it doubles too, the old table alive
+///     beside the new one);
+///   - the gate's own small buffers: its inputs, and one entry in the gate
+///     list of each input.  They are too many to ask one by one, so they are
+///     asked for a megabyte at a time (or the gate's own size, if that is
+///     more).  The count is generous (the smallest block the allocator
+///     gives is 32 bytes); it only sets how often the question is asked,
+///     since each question is about the address space really in use.
+/// When an answer is no, the closure remembers it.
+fn room_for_gate(solver: &mut Solver, closure: &mut Closure, arity: usize) -> bool {
+    if closure.no_room {
+        // every loop that makes gates ends when the room is gone, so nothing
+        // should come here again; the exit line says so if something does
+        solver.room.late += 1;
+        return false;
+    }
+    if closure.gates.len() == closure.gates.capacity() {
+        let more = closure.gates.capacity().max(4);
+        let wanted = (more * std::mem::size_of::<Gate>()) as u64;
+        if let Err((used, limit)) = ask_for_gates(closure, wanted) {
+            out_of_room(solver, closure, wanted, used, limit);
+            return false;
+        }
+        if closure.gates.try_reserve_exact(more).is_err() {
+            let used = crate::room::in_use().unwrap_or(0);
+            let limit = crate::room::limit().unwrap_or(0);
+            out_of_room(solver, closure, wanted, used, limit);
+            return false;
+        }
+        closure.gate_bytes = closure.gate_bytes.saturating_add(wanted);
+    }
+    if closure_hash_table_is_full(closure) {
+        // `index_gate` doubles the table and counts it; here only the
+        // question, so that no gate is made that cannot be indexed
+        let new_size = (2 * closure.hash_table.len()).max(1);
+        let wanted = (new_size * std::mem::size_of::<GateId>()) as u64;
+        if let Err((used, limit)) = ask_for_gates(closure, wanted) {
+            out_of_room(solver, closure, wanted, used, limit);
+            return false;
+        }
+    }
+    take_small(solver, closure, (4 * arity as u64 + 16).max(32) + 32 * arity as u64)
+}
+
+/// Not in kissat: `bytes` more of the gates' small buffers.  They are asked
+/// for a megabyte at a time (or `bytes`, if that is more); false when the
+/// answer is no, and the closure then has no room.
+fn take_small(solver: &mut Solver, closure: &mut Closure, bytes: u64) -> bool {
+    if closure.no_room {
+        return false;
+    }
+    if bytes > closure.small_room {
+        let wanted = bytes.max(SMALL_STEP);
+        if let Err((used, limit)) = ask_for_gates(closure, wanted) {
+            out_of_room(solver, closure, wanted, used, limit);
+            return false;
+        }
+        closure.gate_bytes = closure.gate_bytes.saturating_add(wanted);
+        closure.small_room = wanted;
+    }
+    closure.small_room -= bytes;
+    true
+}
+
+/// Not in kissat: `connect_occurrence` for the steps after the extraction,
+/// where a rewritten gate enters the gate list of a literal it did not have
+/// before.  The entry is asked for like a new gate's (src/room.rs); refused,
+/// it is still made (the pass is winding down, and a gate out of a list it
+/// belongs to would be a gate the rewriting misses).
+fn connect_rewritten(solver: &mut Solver, closure: &mut Closure, lit: u32, g: GateId) {
+    let _ = take_small(solver, closure, 32);
+    connect_occurrence(closure, lit, g);
+}
+
+/// Not in kissat: the bytes the watch store may have to grow by when the
+/// clauses get their watches back at the end of the extraction, with the
+/// gate tables still held (0 when it has the room already).  Two entries
+/// come back for each binary clause of the list and four for each large
+/// clause.  The store is not packed: the lists were emptied, not given back,
+/// and one that now grows past its old place moves to the end.  So the
+/// entries count three times, on top of everything the store holds, and the
+/// store doubles until that fits.  A large block grows where it is (the
+/// difference is taken), a small one is copied (the whole new size).
+fn bytes_to_restore_watches(solver: &Solver, closure: &Closure) -> u64 {
+    let large = solver.statistics.clauses_irredundant + solver.statistics.clauses_redundant;
+    let coming = 2 * closure.binaries.len() as u64 + 4 * large;
+    let capacity = solver.vectors.capacity() as u64;
+    let grown = store_capacity(solver.vectors.stack.len() as u64 + 3 * coming);
+    if grown <= capacity {
+        return 0;
+    }
+    let (old, new) = (4 * capacity, 4 * grown);
+    // a block that is large already grows where it is; one that is not is
+    // copied into a new one, both alive for the moment
+    if old >= LARGE_BLOCK {
+        new - old
+    } else {
+        new
     }
 }
 
@@ -397,7 +625,34 @@ fn index_gate(solver: &mut Solver, closure: &mut Closure, g: GateId) {
     debug_assert!(!solver.inconsistent);
     debug_assert!(closure.gates[g as usize].arity > 1);
     if closure_hash_table_is_full(closure) {
-        resize_gate_hash_table(solver, closure);
+        // Not in kissat (src/room.rs): the table doubles, the old one alive
+        // beside the new.  While gates are made, `room_for_gate` has asked
+        // for that already.  The later steps come here too: they index a
+        // gate again after rewriting it, and the places of removed gates
+        // fill the table, so it can double again and again.  Refused, the
+        // pass has no room and winds down (its loops look at `no_room`).
+        // Until it has, a gate goes into the table as it is while a free
+        // place is left, and stays out of it otherwise: it is then not
+        // found for a match, which loses a merge and nothing else.
+        let old_bytes = (closure.hash_table.len() * std::mem::size_of::<GateId>()) as u64;
+        let new_size = (2 * closure.hash_table.len()).max(1);
+        let wanted = (new_size * std::mem::size_of::<GateId>()) as u64;
+        let grow = !closure.no_room
+            && match ask_for_gates(closure, wanted) {
+                Ok(()) => true,
+                Err((used, limit)) => {
+                    out_of_room(solver, closure, wanted, used, limit);
+                    false
+                }
+            };
+        if grow {
+            // the old table goes when the new one is filled: what stays is
+            // the difference
+            closure.gate_bytes = closure.gate_bytes.saturating_add(wanted - old_bytes.min(wanted));
+            resize_gate_hash_table(solver, closure);
+        } else if closure.hash_entries >= closure.hash_table.len() {
+            return;
+        }
     }
     solver.statistics.congruent_indexed += 1;
     let hash_size = closure.hash_table.len();
@@ -614,6 +869,10 @@ fn new_gate(
     lhs: u32,
     lits: &[u32],
 ) -> GateId {
+    // Not in kissat: no gate without room for it (src/room.rs)
+    if !room_for_gate(solver, closure, lits.len()) {
+        return NO_GATE;
+    }
     let arity = lits.len() as u32;
     let g = closure.gates.len() as GateId;
     closure.gates.push(Gate {
@@ -685,6 +944,9 @@ fn new_and_gate(solver: &mut Solver, closure: &mut Closure, lhs: u32) -> GateId 
     }
     let g = new_gate(solver, closure, AND_GATE, hash, lhs, &rhs[..]);
     closure.rhs = rhs;
+    if g == NO_GATE {
+        return NO_GATE; // not in kissat: no room for the gate
+    }
     solver.statistics.congruent_arity_ands += arity as u64;
     solver.statistics.congruent_gates_ands += 1;
     g
@@ -878,6 +1140,9 @@ fn new_xor_gate(solver: &mut Solver, closure: &mut Closure, lhs: u32) -> GateId 
     }
     let g = new_gate(solver, closure, XOR_GATE, hash, lhs, &rhs[..]);
     closure.rhs = rhs;
+    if g == NO_GATE {
+        return NO_GATE; // not in kissat: no room for the gate
+    }
     solver.statistics.congruent_arity_xors += arity as u64;
     solver.statistics.congruent_gates_xors += 1;
     g
@@ -1041,6 +1306,9 @@ fn new_ite_gate(
     }
     let g = new_gate(solver, closure, ITE_GATE, hash, lhs, &rhs[..]);
     closure.rhs = rhs;
+    if g == NO_GATE {
+        return NO_GATE; // not in kissat: no room for the gate
+    }
     solver.statistics.congruent_gates_ites += 1;
     g
 }
@@ -1478,7 +1746,7 @@ fn rewrite_xor_gate(solver: &mut Solver, closure: &mut Closure, g: GateId, dst: 
         && dst_count == 1
     {
         debug_assert!(negated(dst) == 0);
-        connect_occurrence(closure, dst, g);
+        connect_rewritten(solver, closure, dst, g);
     }
     solver.statistics.congruent_rewritten += 1;
     solver.statistics.congruent_rewritten_xors += 1;
@@ -1582,7 +1850,7 @@ fn simplify_ite_gate(solver: &mut Solver, closure: &mut Closure, g: GateId) {
                 for i in 0..closure.gates[g as usize].arity as usize {
                     let l = closure.gates[g as usize].rhs[i];
                     if l != cond && l != then_lit && l != else_lit {
-                        connect_occurrence(closure, l, g);
+                        connect_rewritten(solver, closure, l, g);
                     }
                 }
             }
@@ -1763,7 +2031,7 @@ fn rewrite_ite_gate(solver: &mut Solver, closure: &mut Closure, g: GateId, dst: 
                 for i in 0..closure.gates[g as usize].arity as usize {
                     let l = closure.gates[g as usize].rhs[i];
                     if l != dst && l != cond && l != then_lit && l != else_lit {
-                        connect_occurrence(closure, l, g);
+                        connect_rewritten(solver, closure, l, g);
                     }
                 }
                 if closure.gates[g as usize].tag == AND_GATE {
@@ -1801,7 +2069,7 @@ fn rewrite_ite_gate(solver: &mut Solver, closure: &mut Closure, g: GateId, dst: 
                 for i in 0..closure.gates[g as usize].arity as usize {
                     let l = closure.gates[g as usize].rhs[i];
                     if l != dst && l != cond && l != then_lit && l != else_lit {
-                        connect_occurrence(closure, l, g);
+                        connect_rewritten(solver, closure, l, g);
                     }
                 }
             }
@@ -2195,6 +2463,13 @@ fn extract_and_gates_with_base_clause(solver: &mut Solver, closure: &mut Closure
         if solver.inconsistent {
             break;
         }
+        // Not in kissat (src/room.rs): a clause of n literals has n
+        // candidates here, each with a walk over its binary clauses and a
+        // list of n inputs to build and sort; once the gates have no room
+        // nothing more comes of them.
+        if closure.no_room {
+            break;
+        }
         if solver.arena.clause(c_ref).garbage() {
             break;
         }
@@ -2396,6 +2671,10 @@ fn extract_xor_gates_with_base_clause(solver: &mut Solver, closure: &mut Closure
             extracted += 1;
         }
         if solver.inconsistent {
+            break;
+        }
+        // not in kissat (src/room.rs): no more gates once there is no room
+        if closure.no_room {
             break;
         }
     }
@@ -3029,6 +3308,13 @@ fn merge_condeq(
             if solver.inconsistent {
                 return;
             }
+            // Not in kissat (src/room.rs): this loop goes over every pair
+            // of a "then" and an "else" of one condition, which can be the
+            // square of what the formula holds; once the gates have no room
+            // nothing more comes of it.
+            if closure.no_room {
+                return;
+            }
         }
     }
 }
@@ -3096,6 +3382,9 @@ fn extract_and_gates(solver: &mut Solver, closure: &mut Closure) {
         if solver.inconsistent {
             break;
         }
+        if closure.no_room {
+            break; // not in kissat: src/room.rs
+        }
         let next = solver.arena.next_clause_ref(ref_);
         if last_irredundant != INVALID_REF && ref_ > last_irredundant {
             break;
@@ -3149,6 +3438,9 @@ fn extract_xor_gates(solver: &mut Solver, closure: &mut Closure) {
         if solver.inconsistent {
             break;
         }
+        if closure.no_room {
+            break; // not in kissat: src/room.rs
+        }
         let c_ref = candidates[i];
         if solver.arena.clause(c_ref).garbage() {
             continue;
@@ -3192,6 +3484,9 @@ fn extract_ite_gates(solver: &mut Solver, closure: &mut Closure) {
             extract_ite_gates_of_variable(solver, closure, i);
             if solver.inconsistent {
                 break;
+            }
+            if closure.no_room {
+                break; // not in kissat: src/room.rs
             }
         }
     }
@@ -3237,10 +3532,49 @@ fn extract_gates(solver: &mut Solver, closure: &mut Closure) {
     extract_binaries(solver, closure);
     debug_assert!(!solver.inconsistent);
     extract_and_gates(solver, closure);
-    if !solver.inconsistent && !terminated!(solver, congruence_terminated_4) {
+    // `no_room` is not in kissat (src/room.rs): the other gate kinds need
+    // tables of their own, so they are not looked for either
+    if !solver.inconsistent && !closure.no_room && !terminated!(solver, congruence_terminated_4) {
         extract_xor_gates(solver, closure);
-        if !solver.inconsistent && !terminated!(solver, congruence_terminated_5) {
+        if !solver.inconsistent && !closure.no_room && !terminated!(solver, congruence_terminated_5) {
             extract_ite_gates(solver, closure);
+        }
+    }
+    // Not in kissat (src/room.rs): the clauses get their watches back next,
+    // and the watch store may have to double for that with the gate tables
+    // still held.  That is asked for too; when there is no room for both,
+    // the gates give way.
+    if !closure.no_room && !solver.inconsistent {
+        let wanted = bytes_to_restore_watches(solver, closure);
+        if wanted != 0 {
+            if let Err((used, limit)) = crate::room::ask(wanted) {
+                out_of_room(solver, closure, wanted, used, limit);
+            }
+        }
+    }
+    if closure.no_room {
+        // Not in kissat: the rest of the pass is skipped, so the gates are
+        // of no more use.  They go before the watches come back: on
+        // `pj2002_k500` that step was the next allocation to fail when the
+        // gate tables were still held.
+        closure.gates = Vec::new();
+        reset_gate_hash_table(closure);
+        closure.occurrences = Vec::new();
+        // And the watch store starts again at the front.  Each search step
+        // above filled the lists and emptied them, and an emptied list
+        // leaves its place as a hole; the watches that come back now would
+        // go behind all those holes, and the store would have to double for
+        // them (on a formula of two if-then-else groups that was the
+        // allocation that failed at some limits).  Without the holes they
+        // fit in the room the store has, as far as the store holds what it
+        // held before the pass.
+        if !solver.inconsistent {
+            crate::watch::flush_all_connected(solver);
+            let lits = solver.lits() as usize;
+            for lit in 0..lits {
+                solver.watches[lit] = crate::watch::Watches::default();
+            }
+            crate::vector::renew_vectors(solver);
         }
     }
     reset_extraction(solver, closure);
@@ -3395,6 +3729,12 @@ fn simplify_gates(solver: &mut Solver, closure: &mut Closure, lit: u32) -> bool 
     debug_assert!(solver.values[lit as usize] != 0);
     let occs = std::mem::take(&mut closure.occurrences[lit as usize]);
     for &g in &occs {
+        // Not in kissat (src/room.rs): no room, so the pass winds down;
+        // `false` ends the callers' loops as an inconsistency would
+        if closure.no_room {
+            closure.occurrences[lit as usize] = occs;
+            return false;
+        }
         if !simplify_gate(solver, closure, g) {
             // PORT NOTE: C returns without RELEASE_STACK here; the
             // occurrence list is dropped either way when the closure resets.
@@ -3412,11 +3752,17 @@ fn simplify_gates(solver: &mut Solver, closure: &mut Closure, lit: u32) -> bool 
 fn rewrite_gates(solver: &mut Solver, closure: &mut Closure, dst: u32, src: u32) -> bool {
     let occs = std::mem::take(&mut closure.occurrences[src as usize]);
     for &g in &occs {
+        // Not in kissat (src/room.rs): as in `simplify_gates`
+        if closure.no_room {
+            closure.occurrences[src as usize] = occs;
+            return false;
+        }
         if !rewrite_gate(solver, closure, g, dst, src) {
             closure.occurrences[src as usize] = occs;
             return false;
         } else if !closure.gates[g as usize].garbage && gate_contains(&closure.gates[g as usize], dst)
         {
+            let _ = take_small(solver, closure, 32); // not in kissat: src/room.rs
             closure.occurrences[dst as usize].push(g);
         }
     }
@@ -3749,19 +4095,57 @@ pub fn congruence(solver: &mut Solver) -> bool {
     if crate::kimits::delaying(solver, DelayId::Congruence) {
         return false;
     }
+    // Not in kissat: the pass's tables are optional, so it asks for room
+    // first (src/room.rs).  Once it found none it stays off: the formula
+    // does not get smaller by much, and each try costs the extraction.
+    if solver.room.congruence_off {
+        return false;
+    }
+    let wanted = if solver.options.memwhole != 0 {
+        bytes_for_the_pass(solver)
+    } else {
+        bytes_to_start(solver)
+    };
+    let before = crate::room::in_use().unwrap_or(0);
+    if let Err((used, limit)) = crate::room::ask(wanted) {
+        solver.room.congruence_off = true;
+        solver.room.gates = 0;
+        solver.room.wanted = wanted;
+        solver.room.used = used;
+        solver.room.limit = limit;
+        let closures_count = solver.statistics.closures;
+        crate::print::phase(
+            solver,
+            "congruence",
+            closures_count,
+            format_args!("no room for the tables of the pass: skipped from now on"),
+        );
+        return false;
+    }
     crate::profile::start_checked(solver, Prof::congruence);
     solver.statistics.closures += 1;
     let mut closure = init_closure(solver);
+    // what the gates must leave free: the room this pass was just promised
+    closure.floor = before.saturating_add(wanted);
     extract_gates(solver, &mut closure);
     let mut reset = false;
-    if !solver.inconsistent && !terminated!(solver, congruence_terminated_9) {
+    if closure.no_room {
+        // Not in kissat: the room ran out while gates were collected.  What
+        // was merged so far stands (each merge is two binary clauses, in the
+        // proof too); the rest of the pass works on the gates and needs
+        // tables of its own, so it is skipped as after a termination.
+    } else if !solver.inconsistent && !terminated!(solver, congruence_terminated_9) {
         find_units(solver, &mut closure);
         if !solver.inconsistent && !terminated!(solver, congruence_terminated_10) {
             find_equivalences(solver, &mut closure);
             if !solver.inconsistent && !terminated!(solver, congruence_terminated_11) {
                 let propagated = propagate_units_and_equivalences(solver, &mut closure);
+                // `no_room` is not in kissat (src/room.rs): the room ran out
+                // while the merges were followed up; the last step has
+                // lists of its own and is left out
                 if !solver.inconsistent
                     && propagated != 0
+                    && !closure.no_room
                     && !terminated!(solver, congruence_terminated_12)
                 {
                     forward_subsume_matching_clauses(solver, &mut closure);
@@ -3769,6 +4153,18 @@ pub fn congruence(solver: &mut Solver) -> bool {
                 }
             }
         }
+    }
+    if closure.no_room {
+        // Not in kissat: wherever the room ran out, the pass is off from now on
+        solver.room.congruence_off = true;
+        let closures_count = solver.statistics.closures;
+        let gates = solver.room.gates;
+        crate::print::phase(
+            solver,
+            "congruence",
+            closures_count,
+            format_args!("no room beside {} gates: the pass ends here and is skipped from now on", gates),
+        );
     }
     if !reset {
         reset_closure(solver, &mut closure);

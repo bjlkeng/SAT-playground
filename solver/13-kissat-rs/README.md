@@ -12354,6 +12354,477 @@ python3 tools/guide_report.py collect F1 --dir log/guide-lean-2026-11-24 --out l
 python3 tools/guide_report.py boot log/guide-lean-2026-11-24/results_F1.tsv --base base --arms lean
 ```
 
+## Memory: the two formulas that die on the 16 GB limit (2026-11-25/26; epic `SAT-playground-qu3`, beads `qu3.2`, `qu3.3`)
+
+### In plain words
+
+**The question.** Two of the 400 formulas of 2025 end the same way in every
+run we have ever made: the solver asks the system for more memory, the system
+says no, and the run dies. A run that dies is lost whatever the search would
+have done. The owner asked on 2026-11-25 to try to fix them, with any change
+run against all 400 formulas so that nothing else gets worse; and on
+2026-11-26 to run the two formulas once more with 30 GB, the competition's
+limit, to see how far they get.
+
+Three facts first.
+- We give each run 16 GB. The harness's timed runs set 16,000 MiB (15.63
+  GiB), the same-search tool 16 GiB, and the measurements below a little
+  less, 15.26 GiB (16,000,000 KB). The limit counts memory *asked for*, used
+  or not.
+- The solver keeps its data in tables that grow by doubling: a full table of
+  2 GB asks for 4 GB. So the last step before the limit is a big one.
+- Most tables are needed: the formula itself, and about 100 bytes of
+  bookkeeping for every variable. A few belong to *optional* steps: passes
+  that tidy the formula before the search and that the search can do without.
+
+**What was done.**
+
+1. Each of the two formulas was run under the limit with a logger that writes
+   down the memory in use twice a second, to see which table fails and how
+   full the memory is at that moment.
+2. For the larger one the sizes were added up from the formula itself: how
+   many variables, how many clauses of each length.
+3. For the other, the table that fails belongs to an optional pass (it finds
+   gates that compute the same thing and merges them). That pass now asks
+   whether there is room before it takes memory, and steps aside when there
+   is not.
+4. Tests on small formulas under limits found by search, so that the pass is
+   refused at every point where it can be; one check that a "no solution"
+   answer reached through a stopped pass still has a valid proof.
+5. The 400 formulas with the old build and the new one, twice: once under
+   work limits, where every run must come out the same to the last counter,
+   and once on the clock.
+6. Both formulas once more with 30 GB and up to 5,000 s (the competition's
+   limits), old build and new, with the memory logger.
+
+**A small example.** A workbench 16 units wide. The tools you must have take
+some of it; a sorting tray you would like to use takes more.
+
+| | the tools | the tray | what happens |
+|---|---|---|---|
+| a small job | 3 | 2 | everything fits; nothing changes |
+| formula B (`pj2002_k500`) | 8.5 | about 9 with its lid open | before: the tray went down anyway, and half way through everything fell off. Now: the tray is measured first and left in its box, and the work goes on without it |
+| formula A (`17.normalised`) | 17 packed without a gap, 24.5 the way they are laid out | never reached | the tools alone do not fit the bench: nothing to leave out |
+
+On a bench of 30 units formula A fits, and the job is done in three minutes.
+Formula B's tray fits too and sorts a lot; twenty minutes later a second tray
+(another optional step) wants 16 more units with 23.7 taken, and everything
+falls off again.
+
+**The result.** Under 16 GB no formula is gained: one crash becomes a run
+that goes the full 30 minutes, and the other formula cannot fit at all. With
+30 GB the larger formula is solved in three minutes; the other gets further
+and then dies on memory there too, in a step this change does not cover.
+
+| formula | 16 GB, before | 16 GB, after | 30 GB (old build and new: the same run) |
+|---|---|---|---|
+| `pj2002_k500` (44.9 million variables, 39 million AND gates) | dies after 128 s, in the optional pass, asking for 3 GiB with 14.95 GiB in use (116 s in the harness, whose limit is 15.63 GiB) | the pass is not started (it would take 8.8 GB with 8.5 in use) and the run goes its 30 minutes: 6,713 conflicts, unsolved | the pass runs and merges 17.1 million of the variables; 30,152 conflicts in 20 minutes; then the run dies after 22.6 minutes, in variable elimination, when the store that holds the clauses asks for 16 GiB with 23.5 GiB in use |
+| `17.normalised` (117.3 million variables, 315.6 million clauses) | dies after 62 s while the file is still being read | the same. It needs about 17 GiB with no waste at all | **solved in 177 s**: 156 s to read the file, then the first simple guess (every variable false) works; no conflict. The solution was checked against all 315,573,317 clauses. Peak 24.5 GiB asked for, 19.4 GiB in use |
+| the other 398 | | under work limits all 400 formulas come out the same in every field, these two included. On the clock: 342 solved against 344, see below | not run |
+
+**What it means.**
+- `17.normalised` is a question of the limit, not of the code. With 30 GB the
+  solver as it is solves it in three minutes, as it solves its eleven
+  siblings (15 to 320 s, not a single conflict).
+- `pj2002_k500` is not a formula we gain. Under 16 GB the fix turns a crash
+  into a full run that makes 6,713 conflicts in 30 minutes; its five solved
+  siblings need 20,000 to 230,000. With 30 GB the pass has room, and with it
+  the run makes conflicts more than six times as fast (30,152 in 20
+  minutes), so it is on the siblings' road; but another optional step then
+  takes the memory. Whether it would be solved in the 5,000 s if that step
+  asked first too is not known.
+- The fix is protection: an optional pass no longer ends a run that could
+  have gone on. Only this one pass has it.
+- **On the clock the new build solved two formulas fewer (342 against 344),
+  and the reason is where the compiler put the code, not what the code
+  does.** Both are formulas the old build solves in the last 2% of the 30
+  minutes (1,764 and 1,796 s of 1,800); the new build was stopped at 99.8%
+  and 99.3% of the same work. The search is the same on every formula both
+  builds solve, to the last conflict. The new build is about half a percent
+  slower at the same work: it runs the same instructions (0.9998 of the old
+  build's) and needs 0.7% more of the processor's clock ticks, because more
+  of its inner loops happen to sit across a boundary this processor decodes
+  slowly. Any rebuild moves that by about this much, either way (see "A
+  finding on the side: the jump switch"). Built with the compiler switch that
+  keeps jumps off those boundaries, old and new take the same clock ticks
+  (0.999 to 1.001). The build that is committed has three more small changes
+  from the review, and its code lands level with the old build's (see "The
+  build that is committed" below).
+- On the way, a measurement worth keeping: while a formula is read, the
+  solver holds about 1.4 times the memory the formula needs (12.27 GiB for
+  `9.normalised`, which needs about 8.5; 24.5 for `17.normalised`, which
+  needs about 17), from the doubling and from gaps the lists leave as they
+  grow.
+
+**Caveats.**
+- The 30 GB runs are one run each at one seed (old build and new, which are
+  the same run). They were made on a quiet host with four processes; a
+  32-job run at 30 GB was not tried.
+- Only the gate-merging pass asks. Everything else still dies when it cannot
+  grow, as `pj2002_k500` shows at 30 GB.
+- The pass's question before it starts is an estimate for formulas as they
+  come, not the most it could ever take; a formula built to defeat it can
+  still run it out of memory. Seven rounds of review each built such a
+  formula, for a place that did not ask yet or that took room promised to
+  another; those places are covered now.
+- Being refused depends on the limit the run is under, so the same formula
+  takes another path under 16 GB than under 30 GB (`pj2002_k500` does). Under
+  one limit it is the same every time.
+- Nothing here helps when a limit is enforced from outside without the solver
+  being told (a container that kills the process). The new option
+  `--memlimit` tells it.
+- The two formulas lost on the clock are a fact of this build, and a rebuild
+  for any other reason can give them back or take two others: five formulas
+  are solved in the last 10% of the time limit, and the old build run twice
+  differs by 6% on one of them (`Circuit_multiplier29`: 1,692 s and 1,800 s).
+
+**Decisions for the owner.**
+1. The memory limit. With the competition's 30 GB one more formula of 2025 is
+   solved (`17.normalised`, 177 s). Three ways: keep 16 GB everywhere (the
+   yardstick of every earlier run); give every run 30 GB (32 jobs could then
+   ask for 960 GB of a 502 GB host if a suite had many formulas this large;
+   on 2025 only seven formulas hold more than 6 GiB); or keep 16 GB and give
+   a formula that dies on memory one more try at 30 GB (two formulas on
+   2025). The reference kissat would need the same runs for a fair count.
+2. Whether the two formulas lost on the clock count against the change. By
+   the same-search check and the hardware counters it is not a change of the
+   search or of the work; it is the placement luck of one build.
+
+### What was measured
+
+`log/memory-2026-11-25/probe.py NAME SOLVER CNF [options]` runs one solver
+under an address-space limit (`RLIMIT_AS`; 16,000,000 KB = 15.26 GiB unless
+`MEM_KB` says otherwise, a little under the harness's 16,000 MiB = 15.63 GiB
+and the same-search tool's 16 GiB) and writes the address space in use
+(`VmSize`) and the resident memory (`VmRSS`) of the process twice a second.
+`lengths.txt` has the clause lengths of both formulas.
+
+| | `17.normalised` | `pj2002_k500` |
+|---|---|---|
+| variables, clauses | 117,295,030 and 315,573,317 | 44,870,622 and 116,969,319 |
+| clauses by length | 11.2M units, 204.8M binary, 99.5M ternary, 33K longer | 78.0M binary, 39.0M ternary |
+| the old build under 15.26 GiB | abort at 62 s: "allocation of 4 GiB failed" | abort at 128 s: "allocation of 3 GiB failed" |
+| address space, resident at the abort | 14.08 GiB, 12.07 GiB | 14.95 GiB, 13.25 GiB |
+| the table that fails | the watch store, full at 2 GiB (39% of the clauses read) | the congruence pass's list of gates (48 bytes a gate), full at 33,554,432 gates |
+
+Where `17.normalised`'s memory goes. Every variable costs 101 bytes of
+tables: the two watch-list headers 32, the assignment record 16, the score
+heap 16 (score, position, its stack), the queue links 12, the import and
+export maps 12, the trail 4, values, marks and flags 6, the saved phases 3.
+85 of them are sized from the file's header before the first clause (measured
+on its sibling `9.normalised`: 4.78 GiB of address space at 58.6M variables);
+the maps and the heap's stack grow as variables appear. That is 11.0 GiB
+here. The clauses, with no waste: 2.96 GiB of ternary clauses in the arena
+(32 bytes each), 1.53 GiB of binary watches (two entries of 4 bytes a
+clause), 1.48 GiB of ternary watches (four entries). Together about 17 GiB
+before any working room, against 15.26 here, 15.63 in the harness and 16 in
+the same-search tool; even the part sized from the header plus the clauses
+is 15.3. As built it is more: the watch store, the arena and the three
+growing tables double (the last step is the biggest), and the watch lists
+leave holes as they grow, which only the defragmentation after parsing takes
+out (978 MB on `9.normalised`). `9.normalised`, half the size, peaks at 12.27
+GiB of address space and 9.70 GiB resident, for a formula that needs about
+8.5 with no waste; for `17.normalised` that made 19 to 24 GiB, by whether its
+watch store stops at 4 or at 8 GiB (measured at 30 GB, below: 24.53, the
+watch store at 8). The C kissat dies on both formulas too under 16 GB (epic
+`qu3`).
+
+`pj2002_k500` once it lives under 16 GB. With the pass off
+(`--congruence=0`), 30 minutes: 8,903 conflicts, 840 million decisions, peak
+9.97 GiB of address space (seed 0; 6,713 conflicts at seed 2 in the paired
+run). Its siblings: `pj2008_k200` solved after 227,534 conflicts,
+`pj2016_k100` after 213,285, `pj2008_k80` 81,304, `pj2009_k80` 51,519,
+`pj2013_k9` 20,514.
+
+The peak resident memory of all 400 cells, from the same-search run of the
+old build under work budgets (`offcheck/old-full/results.tsv`, column
+`maxrss_kb`): 365 under 2 GiB, 19 from 2 to 4, 9 from 4 to 6, and seven above
+6: `17.normalised` 12.07 (dies), `oisc-subrv-and-nested-15` 11.62,
+`9.normalised` 9.70, `11.normalised` 8.92, `7.normalised` 7.76,
+`pj2002_k500` 7.66 at that point (dies later), `oisc-subrv-and-nested-12`
+6.84.
+
+### With 30 GB (2026-11-26, the owner's go for these two formulas)
+
+`log/memory-2026-11-25/after400.sh`: both formulas, the old build and the new
+one, under the limit the harness sets for `--mem-mb 30000` (an address-space
+limit of 30,720,000 KB = 29.30 GiB), up to 5,000 s, seed 2, the proof written
+as the harness does, each run alone on a core of a quiet host, memory logged
+twice a second. Old and new print the same work-clock line on both formulas,
+and no room line: no question was refused.
+
+| | `17.normalised` | `pj2002_k500` |
+|---|---|---|
+| the end | `s SATISFIABLE` after 177 s | abort after 1,358 s: "memory allocation of 17179869184 bytes failed" |
+| where the time goes | reading 155.6 s, the lucky phase 10.7 s ("forward setting literals to false"), no search | the profile's lines (they overlap): search 736 s, simplify 420 s, probe 386 s, congruence 148 s, eliminate 142 s, preprocess 133 s, parse 57 s |
+| conflicts | 0 | 30,152 (the last at 1,217 s) |
+| peak address space, resident | 24.53 GiB (from 68 s to the end of reading), 19.40 GiB | 23.47 GiB, 21.35 GiB (old build 23.36, 21.26) |
+| the answer's check | the model satisfies all 315,573,317 clauses (`check_model.py`; 117,295,030 variables set) | none to check |
+
+`17.normalised`: at 56 s a table doubles from 4 to 8 GiB (18.9 to 22.9 GiB
+of address space; by its size the watch store, which was the table that
+failed under 16 GB one doubling earlier), and the run stays at 24.5 GiB until
+the file is read; after the reading it is at 18.9.
+
+`pj2002_k500`: the congruence pass runs to its end and merges 17,129,249
+variables (38%); 27.1 million of the 44.9 million stay active. The run then
+makes 30,152 conflicts by 1,217 s (25 for each second of the run, 736 s of it
+search; under 16 GB without the pass 6,713 in 1,800 s, 4 a second). After the
+forward subsumption at
+1,222 s the variable elimination starts, and the address space goes from 10.5
+to 23.5 GiB in 70 s; then an allocation of 16 GiB fails. A build with symbols
+(`sat-solver-room11-sym`, the same source) dies at the same step, and its
+backtrace names it: `eliminate_variable` → `connect_resolvents` →
+`new_irredundant_clause` → `Arena::enlarge_stack`. The clause store is full
+at 8 GiB and asks for 16: elimination adds its new clauses there and the ones
+it removes stay as garbage until the collection after the round. Not fixed
+here (bead `SAT-playground-qu3.4`); the C kissat keeps its clauses the same
+way.
+
+### What was built
+
+| option | default | what it does |
+|---|---|---|
+| `memlimit` | 0 | a memory limit in MB that optional passes keep under; 0 = only the process's own address-space limit. For a limit the solver cannot see (a container's, a watcher's). Nothing enforces it. It holds for the whole process, the helper solvers of the structure passes and of the control split included. |
+| `memwhole` | 1 | an optional pass asks for the room of its whole run before it starts. With 0 it asks only for its first tables, starts sooner, and stops part way when its gates do not fit (for tests and experiments: that mode does not ask for the setup tables of the XOR and ITE searches). |
+
+- `src/room.rs` (new, not in kissat). The limit is the smaller of the
+  process's address-space limit (`RLIMIT_AS`, what `ulimit -v` and the
+  harness's `--mem-mb` set) and `--memlimit`. What is in use is the address
+  space the process holds (`VmSize`, from `/proc/self/statm`). `ask(bytes)`
+  says yes when that many bytes more still leave a sixteenth of the limit
+  free. With no limit it always says yes.
+- `src/congruence.rs`. What the pass asks for:
+  1. **Before it starts, everything that grows with the formula**
+     (`bytes_for_the_pass`): 48 bytes a literal, 8 a variable, 24 a binary
+     clause and 16 a large clause of tables, counted as they are alive
+     together; and the watch store, which dense mode gives back and the pass
+     fills again, at twice the entries it will hold (the stores measured hold
+     1.7 for each one in use), rounded up to its next doubling. Refused, the
+     pass does not start.
+  2. **As they grow, the things that grow with the gates**, which can be many
+     more than the clauses (one condition with n "then" and n "else" values
+     makes n times n if-then-else gates): the list of gates and the hash
+     table when they would double, in the extraction and in the steps after
+     it, and the gates' own small buffers a megabyte at a time. **The gates
+     may only have what lies above the room of 1**: the pass takes that room
+     step by step (the XOR search's tables, the lists of each if-then-else
+     condition, the watches' return), and gates that grew into the part not
+     taken yet would make a later step fail. So for a gate's question what
+     counts as in use is at least the use when the pass started, plus the
+     room of 1, plus what the gates were given before.
+  3. **At the end of the extraction, the watch store's growth** when the
+     clauses get their watches back with the gate tables still held, at three
+     times the entries.
+  Refused part way, the pass makes no more gates, ends its loops at once,
+  frees the gate tables before the watches come back, keeps what it merged
+  (each merge is two binary clauses, in the proof too), skips the rest as
+  after a termination, and stays off for the rest of the run. In that case
+  the watch store also starts again at the front (the block given back and
+  taken again at the same size, `renew_vectors`): each search step filled
+  the lists and emptied them, and the watches would otherwise come back
+  behind the holes those lists left, with the store doubling for them.
+- The lines: with `-v`, `c [congruence-N] no room for the tables of the
+  pass: skipped from now on` or `no room beside G gates: the pass ends here
+  and is skipped from now on`; at the exit `c room refused=R congruence=off
+  gates=G wanted_mb=W used_mb=U limit_mb=L` (`gates=0`: it never started), or
+  `c room refused=R congruence=on last_wanted_mb=W last_used_mb=U limit_mb=L`
+  when only helper solvers were refused. The first form ends with `late=N`
+  when N gates were asked for after the pass had stopped (a loop that did
+  not end at once; none is known). Nothing is printed when no question was
+  refused, and nothing when the run dies on memory somewhere else.
+
+A run that was not near its limit does exactly what it did before: the
+questions cost a read of `/proc` each, nothing on the work clock and no
+counter.
+
+### Checked
+
+- `tests/room.rs`, twelve tests, and four unit tests in `src/room.rs`
+  (`cargo test --release`: 424 passed, 0 failed; the smoke test 9 of 9).
+  With room to spare the run is the run without the option, step for step,
+  in both modes. Told of 8 MB the pass does not start. By default it starts
+  only at a higher limit than with `--memwhole=0`; at that limit it stops
+  among its gates (they come on top of the room it was promised), and half
+  as much again it finishes. With `--memwhole=0`, at the smallest limit where it makes a
+  gate (found by bisection) it stops part way, on a circuit of 120,000 AND
+  gates and on 4,095 gates of 256 inputs each, and the model holds; under a
+  real address-space limit of that size the process lives. One condition
+  with 1,000 "then" and 1,000 "else" values (a million gates from 8,000
+  clauses) stops part way by default too, and at once. With a second name
+  for the condition every gate is rewritten, and the run lives through the
+  hash table's doubling. One clause of 1,200 literals with a binary clause
+  for every pair ("exactly one of 1,200") has 1,200 candidate gates of 1,199
+  inputs each: asked as it grows, the pass stops among them and tries no
+  further candidate. Two conditions, the first with 1,024 values (a million
+  gates) and the second with 150,000 (megabytes of lists before its first
+  gate, and more gates than fit anywhere): under each of 140 real limits a
+  megabyte apart the run lives and its model holds. Every test that reads
+  the exit line fails when the line
+  has a `late` field, that is when a gate was asked for after the pass had
+  stopped. Under every real limit from an eighth above what
+  the run needs without the pass, megabyte by megabyte up to where the pass
+  has all its room, the run with the pass ends as it should: AND circuit,
+  AND gates only, XOR circuit, if-then-else gates. The helper solvers of the
+  control split keep under the run's `--memlimit`, and so does the
+  incremental mode.
+- A proof through a stopped pass: `log/memory-2026-11-25/proof_check.py`
+  builds 60,000 pairs of twin gates and a clause that needs 50 of the merges
+  to be refuted, and gives the proofs to drat-trim: verified with no limit
+  (60,008 merges, 0 conflicts), with the pass stopped at 32,768 gates (46
+  conflicts), and with the pass never started (218 conflicts).
+- `pj2002_k500` under 15.26 GiB: the old build aborts at 128 s; the new one
+  prints `c room refused=1 congruence=off gates=0 wanted_mb=8780
+  used_mb=8524 limit_mb=15625` and goes on, peak 9.97 GiB of address space.
+- `oisc-subrv-and-nested-15`, the largest formula that works near the limit
+  (peak 11.91 GiB of address space, its case solvers run the pass): old and
+  new build give the same work-clock line, and no question is refused.
+- The same search on the 400 cells: `tools/as_baseline.py --set full` (the
+  shipped defaults, each cell under its own work budget, so a run ends at
+  the same point however busy the host is; limit 16 GiB), the old build
+  (`250a1785`) against the new one (`2d9dce07`), 2026-11-25 23:12 to
+  2026-11-26 02:42. **400 of 400 cells identical in every exact field** (exit
+  code, answer, work clock, counters, the output's text, model, proof and
+  its sidecars): 123 with a model, 190 refuted, 86 at their budget, and
+  `17.normalised`, which aborts while it reads the file in both.
+  `pj2002_k500` is one of the 400 too: its budget is the work the old build
+  had done when it died, so under the budget both builds stop at that point,
+  before the pass (79 s, 8.0 GiB). What the change does for it shows on the
+  clock, next. (`log/memory-2026-11-25/offcheck/compare-full.txt`)
+- The same search on the stock path (our own passes off):
+  `tools/as_baseline.py --set stockmed`, the 100 medium cells: 100 of 100
+  identical in every exact field (`offcheck/compare-stockmed.txt`).
+- The paired 400-cell run on the clock: `tools/feature_ablation.py`, 1,800
+  s, seed 2, 32 jobs, 16,000 MiB, answers checked, three arms started
+  together: the old build, the old build once more (the run's own floor) and
+  the new build; 2026-11-26 02:42 to 12:50,
+  `log/abtest-room-400-2026-11-26-02-42-44`.
+
+  | arm | solved (models + refuted) | wall PAR-2 | tick PAR-2 | models checked | proofs accepted | proof check not finished |
+  |---|---|---|---|---|---|---|
+  | old | 344 (150 + 194) | 287,326 | 7.519e12 | 150 | 167 | 27 |
+  | old again | 344 (150 + 194) | 287,581 (1.0009) | 7.512e12 (0.9990) | 150 | 168 | 26 |
+  | new | 342 (148 + 194) | 291,835 (1.0157) | 7.655e12 (1.0180) | 148 | 168 | 26 |
+
+  No contradiction, no failed check, no stop that is neither the clock nor
+  the memory limit. **The search is the same**: on each of the 342 cells that
+  old and new both solve, the conflict count and the work are equal (344 of
+  344 for old against old again).
+
+  **The two cells the new build does not solve are solves at the limit.**
+  `lockchart-group1-L200-K289-p8d4j1`: old 1,764 s, old again 1,796 s; the
+  new build was stopped at 1,800 s with 104,028 of the 108,650 conflicts and
+  99.77% of the work the solve takes. `at-least-two-vmpc_28`: 1,796 s and
+  1,766 s; new stopped at 99.30% of the work. Five cells are solved by the
+  old build in the last 10% of the limit (these two, `Kakuro-easy-132`,
+  `HCP-446-105`, `Circuit_multiplier29`); on the last one the old build's two
+  runs take 1,692 s and 1,800 s.
+
+  **The new build is about half a percent slower at the same work, and that
+  is the placement of its code.** On the 287 cells all three arms solve in 1
+  s or more (without the three named below): summed time new over old
+  1.0068, median 1.0054, slower on 194 cells; old again over old 1.0030,
+  median 1.0002, slower on 144. Hardware counters (`tools/as_counters.py`,
+  its four cells, `counters.txt`): the new build runs the same instructions
+  (0.9995 to 1.0000) in 0.6 to 0.9% more clock ticks, and 1 to 3.5 points
+  more of its micro-operations go through the decoder (for example 31.1%
+  against 33.8%). Old and new source built with the jump switch (`-C
+  llvm-args=-x86-branches-within-32B-boundaries`, `counters-jump.txt`): the
+  same instructions and 0.9992 to 1.0013 of the clock ticks, the decoder
+  share 4.8 to 6.7% in both. So the change costs no instruction that can be
+  measured; this build's inner loops sit a little worse on this processor,
+  as a rebuild for any reason can make them ("Assumptions", "Speed": main with
+  one unused option added ran at 0.9933 of main; "A finding on the side: the
+  jump switch").
+
+  The two lost cells again, old and new at the same moment on neighbouring
+  cores of the quiet host, twice with the cores swapped
+  (`tools/as_pairtime.py`, proof written, seed 2; `lost2-pair/`): both builds
+  solve both, with the same work-clock line. `lockchart-group1-L200-K289`:
+  1,354 and 1,365 s for the old build, 1,378 and 1,385 s for the new (1.016).
+  `at-least-two-vmpc_28`: 1,514 and 1,484 s against 1,515 and 1,501 s
+  (1.007). On a quiet host both builds are 300 to 450 s inside the limit;
+  under the 32 jobs of the paired run both are at it. The same pair with
+  the jump switch on both builds (`lost2-pair-jump/`): 1,341 and 1,338 s
+  against 1,351 and 1,346 s (1.007), and 1,480 and 1,449 s against 1,476
+  and 1,460 s (1.002): together 1.004 where the plain builds give 1.011.
+
+  Three cells took far longer in arm new with the same work: `5.normalised`
+  57 s and 61 s against 307 s, `18.normalised` 33 and 33 against 61,
+  `GP_100_951_33` 34 and 34 against 67 (each reads one to two gigabytes).
+  Run again on the quiet host, old and new at the same moment on neighbouring
+  cores, twice with the cores swapped (`slow3.sh`): 51.1 s against 51.1,
+  32.0 against 32.0, 32.5 against 32.5 (equal to the half second in four of
+  the six pairs, the new build half a second later in two; the logger looks
+  twice a second). It was the host at that moment.
+
+  `pj2002_k500`: old and old again die after 116 s; new runs its 1,800 s
+  (6,713 conflicts) with `c room refused=1 congruence=off gates=0
+  wanted_mb=8780 used_mb=8525 limit_mb=16000`, the only room line of the
+  run. In tick PAR-2 an unsolved cell costs twice the work it reached, so
+  this cell alone costs more in arm new: it works 30 minutes instead of
+  dying. Without it new over old is 1.0065 (the two lost cells), and without
+  those two 0.9968 (the unsolved part moves with the host; old again over old
+  is 0.9990).
+- Codex review, seven rounds on the code. Rounds 1 to 6 each found a place in
+  the pass that could still run out of memory or waste the run after a
+  refusal: the gates' own buffers and the watches' return (1), the told limit
+  not reaching helper solvers (2) and set too late for the structure passes
+  and the incremental mode (3), holes in the watch store and the setup tables
+  of the XOR and ITE searches (4, which led to the one question for the whole
+  pass), a loop over pairs that went on after the refusal (5), the hash
+  table's doubling while gates are rewritten (6). Round 7: no findings.
+  Round 8, on the code and this write-up together: one more loop that went
+  on after a refusal (the candidates of one wide clause in the AND search);
+  it and its XOR twin end at once now, and the `late` field and its test
+  hold every such loop to that. Round 9: gates of an earlier condition
+  could take the room promised to a later condition's lists (two conditions,
+  dead at limits of 242 and 243 MB); the gates now stay above the promise.
+  The megabyte sweep written for it then found the same formula dead at 169
+  and 170 MB, in the watch store's doubling when the watches came back
+  behind the holes of the search steps; the store now starts afresh in the
+  refused path. Round 10: no findings. Round 11, on the final write-up with
+  the repeated 400-cell check: no findings.
+- **The build that is committed** (`961d5dc6`) is not the build of the runs
+  above (`2d9dce07`): rounds 8 and 9 added the two loop exits, the gates'
+  stricter question and the store's fresh start, all of which act only in a
+  run where a question is refused. For this build: the same-search check on
+  the 400 cells was run again against the old build's table (`same400b.sh`,
+  2026-11-26 18:32 to 20:27): **400 of 400 cells identical in every exact
+  field** (`offcheck/compare-full2.txt`).
+  `oisc-subrv-and-nested-15` under the harness's limit gives the old build's
+  work-clock line and no room line. `pj2002_k500` with 30 GB gets through
+  the pass as before (no room line; the first 420 s were run). Its hardware
+  counters against the old build, measured twice while other runs were
+  going: the same instructions (1.0000 to 1.0001) and 0.985 to 1.011 of the
+  clock ticks by cell, 1.00 on average (`counters-room14.txt`,
+  `counters-room14b.txt`): this build's code happens to land level with the
+  old build's, where the build that was timed landed 0.7% behind. Its own
+  run on the clock had not been made when this was written (started the
+  same evening; bead `qu3.2` has the result).
+
+### Reproduce
+
+```bash
+# from the repository's root
+(cd solver/13-kissat-rs && cargo test --release --test room)
+# one formula under a limit (MEM_KB, default 16,000,000), with a memory log
+python3 log/memory-2026-11-25/probe.py pj solver/13-kissat-rs/target/release/sat-solver \
+  benchmarks/sat-comp-2025/0dd928240a9559ab7e50d088e3f168ac-pj2002_k500.cnf.xz -v
+# a proof through a stopped pass
+python3 log/memory-2026-11-25/proof_check.py solver/13-kissat-rs/target/release/sat-solver 60000
+# the two 400-cell checks: the same search under work budgets, then on the clock
+bash log/memory-2026-11-25/make_snapshot.sh OLD_BINARY NEW_BINARY
+bash log/memory-2026-11-25/run400.sh
+# the two formulas with 30 GB, then the stock path's same search (above the
+# 16 GB rule: the owner's go of 2026-11-26 was for these two formulas)
+bash log/memory-2026-11-25/after400.sh
+# the committed build: the same search again, and its own run on the clock
+bash log/memory-2026-11-25/same400b.sh
+bash log/memory-2026-11-25/make_snapshot_b.sh OLD_BINARY NEW_BINARY
+bash log/memory-2026-11-25/run400b.sh
+```
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

@@ -357,6 +357,7 @@ pub struct Solver {
     pub roles: crate::roles::Roles, // not in kissat: decisions counted by role (src/roles.rs)
     pub guide: crate::guide::Guide, // not in kissat: nudges toward the real unknowns (src/guide.rs)
     pub assume: crate::assume::Assume, // not in kissat: solving under assumptions (src/assume.rs)
+    pub room: crate::room::State, // not in kissat: passes that stepped aside for memory (src/room.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -595,6 +596,8 @@ pub fn print_statistics(solver: &mut Solver) {
     crate::guide::report(solver);
     // Not in kissat: the assumption solves' exit line; nothing without one
     crate::assume::report(solver);
+    // Not in kissat: the passes that stepped aside for memory; nothing without one
+    crate::room::report(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.

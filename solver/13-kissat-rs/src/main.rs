@@ -109,6 +109,7 @@ pub mod congruence;
 pub mod control;
 pub mod guide;
 pub mod roles;
+pub mod room;
 pub mod factor;
 pub mod terminate;
 pub mod tiers;

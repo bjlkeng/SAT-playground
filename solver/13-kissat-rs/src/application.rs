@@ -1102,6 +1102,11 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     if !ok {
         return 1;
     }
+    // Not in kissat: the memory limit the run was told of, for the whole
+    // process (src/room.rs).  Here, before anything solves: the structure
+    // passes start helper solvers while the formula is read, and the
+    // incremental mode leaves this function a few lines down.
+    crate::room::tell(solver.options.memlimit);
     // Not in kissat: the work-clock limit from the environment (step A.1).
     match ticks_limit_from_env() {
         Ok(None) => {}
