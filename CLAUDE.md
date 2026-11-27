@@ -318,8 +318,10 @@ work is **solver 13** and the RL scheduler on top of it.
   was timed, `2d9dce07`. The committed one, `961d5dc6`, has three more
   changes from the review that act only after a refusal; the same-search
   check was repeated for it, and its code lands level with the old
-  build's.) **A run on the clock
-  can lose a cell or two to a rebuild alone. For a change that is meant to
+  build's. In its own run on the clock it solved 343, and the old build,
+  twice in that run, 344 and 342: the old build against itself lost the
+  same two cells.) **A run on the clock can lose a cell or two to a rebuild
+  alone, or to nothing at all. For a change that is meant to
   leave the search alone, the evidence is the same-search check, the
   instruction counts (`tools/as_counters.py`) and the two builds with the
   jump switch, not the solved count of one clock run.** Cells that read

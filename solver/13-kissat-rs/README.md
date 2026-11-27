@@ -12420,7 +12420,7 @@ and then dies on memory there too, in a step this change does not cover.
 |---|---|---|---|
 | `pj2002_k500` (44.9 million variables, 39 million AND gates) | dies after 128 s, in the optional pass, asking for 3 GiB with 14.95 GiB in use (116 s in the harness, whose limit is 15.63 GiB) | the pass is not started (it would take 8.8 GB with 8.5 in use) and the run goes its 30 minutes: 6,713 conflicts, unsolved | the pass runs and merges 17.1 million of the variables; 30,152 conflicts in 20 minutes; then the run dies after 22.6 minutes, in variable elimination, when the store that holds the clauses asks for 16 GiB with 23.5 GiB in use |
 | `17.normalised` (117.3 million variables, 315.6 million clauses) | dies after 62 s while the file is still being read | the same. It needs about 17 GiB with no waste at all | **solved in 177 s**: 156 s to read the file, then the first simple guess (every variable false) works; no conflict. The solution was checked against all 315,573,317 clauses. Peak 24.5 GiB asked for, 19.4 GiB in use |
-| the other 398 | | under work limits all 400 formulas come out the same in every field, these two included. On the clock: 342 solved against 344, see below | not run |
+| the other 398 | | under work limits all 400 formulas come out the same in every field, these two included. On the clock: 342 solved against 344 for the build timed first; the committed build 343, between the old build's own 344 and 342 of the same run; see below | not run |
 
 **What it means.**
 - `17.normalised` is a question of the limit, not of the code. With 30 GB the
@@ -12435,9 +12435,11 @@ and then dies on memory there too, in a step this change does not cover.
   asked first too is not known.
 - The fix is protection: an optional pass no longer ends a run that could
   have gone on. Only this one pass has it.
-- **On the clock the new build solved two formulas fewer (342 against 344),
-  and the reason is where the compiler put the code, not what the code
-  does.** Both are formulas the old build solves in the last 2% of the 30
+- **On the clock the solved count moves by a formula or two at the time
+  limit, and the change is not the reason.** The build of the change that
+  was timed first solved two formulas fewer than the old build (342 against
+  344), and the reason is where the compiler put the code, not what the code
+  does. Both are formulas the old build solves in the last 2% of the 30
   minutes (1,764 and 1,796 s of 1,800); the new build was stopped at 99.8%
   and 99.3% of the same work. The search is the same on every formula both
   builds solve, to the last conflict. The new build is about half a percent
@@ -12448,8 +12450,10 @@ and then dies on memory there too, in a step this change does not cover.
   finding on the side: the jump switch"). Built with the compiler switch that
   keeps jumps off those boundaries, old and new take the same clock ticks
   (0.999 to 1.001). The build that is committed has three more small changes
-  from the review, and its code lands level with the old build's (see "The
-  build that is committed" below).
+  from the review, and its code lands level with the old build's. In its own
+  run on the clock it solved 343, and the old build, run twice beside it,
+  solved 344 and 342: the old build against itself lost those same two
+  formulas (see "The build that is committed" below).
 - On the way, a measurement worth keeping: while a formula is read, the
   solver holds about 1.4 times the memory the formula needs (12.27 GiB for
   `9.normalised`, which needs about 8.5; 24.5 for `17.normalised`, which
@@ -12473,10 +12477,12 @@ and then dies on memory there too, in a step this change does not cover.
 - Nothing here helps when a limit is enforced from outside without the solver
   being told (a container that kills the process). The new option
   `--memlimit` tells it.
-- The two formulas lost on the clock are a fact of this build, and a rebuild
-  for any other reason can give them back or take two others: five formulas
-  are solved in the last 10% of the time limit, and the old build run twice
-  differs by 6% on one of them (`Circuit_multiplier29`: 1,692 s and 1,800 s).
+- The two formulas lost on the clock are a fact of the time limit more than
+  of a build: five to seven formulas are solved in the last 10% of it, the
+  old build run twice differs by 6% on one of them (`Circuit_multiplier29`:
+  1,692 s and 1,800 s), and in the second run the old build solved both
+  formulas in one of its two runs and neither in the other. All of it is
+  one seed.
 
 **Decisions for the owner.**
 1. The memory limit. With the competition's 30 GB one more formula of 2025 is
@@ -12488,7 +12494,9 @@ and then dies on memory there too, in a step this change does not cover.
    2025). The reference kissat would need the same runs for a fair count.
 2. Whether the two formulas lost on the clock count against the change. By
    the same-search check and the hardware counters it is not a change of the
-   search or of the work; it is the placement luck of one build.
+   search or of the work; it is the placement luck of one build. The
+   committed build's own run agrees: 343 solved, with the old build at 344
+   and at 342 beside it.
 
 ### What was measured
 
@@ -12785,6 +12793,8 @@ counter.
   behind the holes of the search steps; the store now starts afresh in the
   refused path. Round 10: no findings. Round 11, on the final write-up with
   the repeated 400-cell check: no findings.
+  Round 12, on the committed build's run on the clock as written up here:
+  no findings.
 - **The build that is committed** (`961d5dc6`) is not the build of the runs
   above (`2d9dce07`): rounds 8 and 9 added the two loop exits, the gates'
   stricter question and the store's fresh start, all of which act only in a
@@ -12799,9 +12809,34 @@ counter.
   going: the same instructions (1.0000 to 1.0001) and 0.985 to 1.011 of the
   clock ticks by cell, 1.00 on average (`counters-room14.txt`,
   `counters-room14b.txt`): this build's code happens to land level with the
-  old build's, where the build that was timed landed 0.7% behind. Its own
-  run on the clock had not been made when this was written (started the
-  same evening; bead `qu3.2` has the result).
+  old build's, where the build that was timed landed 0.7% behind.
+
+  Its own run on the clock (`run400b.sh`: the same three arms, the committed
+  build as the new one; 2026-11-26 20:34 to 2026-11-27 06:40;
+  `log/abtest-room-400b-2026-11-26-20-34-46`):
+
+  | arm | solved (models + refuted) | wall PAR-2 | tick PAR-2 | models checked | proofs accepted | proof check not finished |
+  |---|---|---|---|---|---|---|
+  | old | 344 (150 + 194) | 287,540 | 7.521e12 | 150 | 167 | 27 |
+  | old again | 342 (148 + 194) | 290,928 (1.0118) | 7.608e12 (1.0116) | 148 | 168 | 26 |
+  | committed | 343 (149 + 194) | 289,111 (1.0055) | 7.626e12 (1.0140) | 149 | 167 | 27 |
+
+  No contradiction, no failed check, and the same search on every cell that
+  two arms both solve (342 of 342 for old again against old, 343 of 343 for
+  the committed build). **The old build against itself differs by two
+  solved cells, the two of the first run.** `lockchart-group1-L200-K289`:
+  old solves it at 1,799.4 s; old again is stopped with 99.99% of the work
+  done, the committed build with 99.90%. `at-least-two-vmpc_28`: old solves
+  it at 1,759 s and the committed build at 1,794 s; old again is stopped at
+  99.46%. On the 290 cells all three solve in 1 s or more, the summed time
+  is 0.9969 of old's for old again and 0.9968 for the committed build
+  (medians 0.9997 and 0.9995): level. `pj2002_k500`: old and old again die
+  after 116 s; the committed build runs its 1,800 s (6,713 conflicts) and
+  prints the one room line of the run (`limit_mb=16000`). Without that cell
+  its tick PAR-2 is 1.0025 of old's, and old again's is 1.0116 (the
+  unsolved part moves with the host). `5.normalised` again takes several
+  times as long in two arms with the same work (57 s, 133 s and 202 s), as
+  in the first run: the host. (`paired_report_b.txt`)
 
 ### Reproduce
 
